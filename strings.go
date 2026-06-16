@@ -20,7 +20,6 @@ func decodeString(b []byte, pos, size int, strType uint8, sep byte) string {
 
 	var s string
 	if strType&1 == 0 {
-		// UTF-16LE.
 		u := make([]uint16, 0, len(data)/2+1)
 		for i := 0; i+1 < len(data); i += 2 {
 			c := uint16(data[i]) | uint16(data[i+1])<<8
@@ -31,7 +30,6 @@ func decodeString(b []byte, pos, size int, strType uint8, sep byte) string {
 		}
 		s = string(utf16.Decode(u))
 	} else {
-		// ASCII.
 		out := make([]byte, len(data))
 		copy(out, data)
 		for i := 0; i+1 < len(out); i++ {

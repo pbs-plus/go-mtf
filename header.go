@@ -1,8 +1,5 @@
 package mtf
 
-// This file contains little-endian field accessors operating on the raw bytes
-// of a common descriptor block. The offsets mirror mtf.h from mtftar.
-
 const (
 	dbTypeOff     = 0  // block type (4 bytes)
 	dbAttrOff     = 4  // common attributes (uint32)

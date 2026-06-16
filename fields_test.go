@@ -12,11 +12,9 @@ func TestChecksumAlgorithm(t *testing.T) {
 	b := newBlock()
 	writeCommon(b, dbTAPE, 0)
 	putU16(b, tapeFLBSizeOff, testFLBSize)
-	// Fill a few known bytes so the checksum is non-zero/deterministic.
-	b[12] = 0x01 // displayable size low byte
-	b[20] = 0x02 // FLA low byte
+	b[12] = 0x01
+	b[20] = 0x02
 
-	// Compute the expected word-wise XOR over bytes 0..45.
 	var want uint16
 	for off := 0; off+1 < dbChecksumOff; off += 2 {
 		want ^= u16(b, off)
@@ -25,14 +23,12 @@ func TestChecksumAlgorithm(t *testing.T) {
 		t.Fatalf("commonChecksum = %04x, want %04x", got, want)
 	}
 
-	// Embed the checksum and verify it validates.
 	b[dbChecksumOff] = byte(want)
 	b[dbChecksumOff+1] = byte(want >> 8)
 	if !checksumValid(b) {
 		t.Fatalf("checksumValid = false for a correctly checksummed block")
 	}
 
-	// Corrupt one header byte and confirm the check fails.
 	b[4] ^= 0xFF
 	if checksumValid(b) {
 		t.Fatalf("checksumValid = true after corrupting header")
@@ -163,7 +159,6 @@ func TestSurfaceHeaderFields(t *testing.T) {
 		if err != nil {
 			break
 		}
-		// Displayable size is present on every header now.
 		_ = h.DisplayableSize
 		switch h.Type {
 		case EntryVolume:
@@ -221,8 +216,7 @@ func TestStreamFlagsParsing(t *testing.T) {
 	buf.Write(buildVOLB("C:"))
 	buf.Write(buildDIRB(1, "Users", dirMtime))
 	buf.Write(preamble)
-	buf.Write([]byte{0xAA, 0xBB, 0xCC, 0xDD}) // 4 bytes of "compressed" data
-	// SPAD to pad the block.
+	buf.Write([]byte{0xAA, 0xBB, 0xCC, 0xDD})
 	if m := buf.Len() % 4; m != 0 {
 		buf.Write(make([]byte, 4-m))
 	}

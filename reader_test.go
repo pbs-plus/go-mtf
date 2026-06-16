@@ -18,7 +18,7 @@ func encodeDateTime(t time.Time) [5]byte {
 	year, month, day := t.Date()
 	hour, min, sec := t.Clock()
 	y := year
-	m := int(month) // 1-12
+	m := int(month)
 	var b [5]byte
 	b[0] = byte(y >> 6)
 	b[1] = byte((y&0x3F)<<2 | (m >> 2))
@@ -31,9 +31,8 @@ func encodeDateTime(t time.Time) [5]byte {
 // commonDB writes the common descriptor block fields shared by all blocks.
 func writeCommon(b []byte, typ [4]byte, off uint16) {
 	copy(b[dbTypeOff:], typ[:])
-	// Attributes left zero.
 	b[dbOffOff], b[dbOffOff+1] = byte(off), byte(off>>8)
-	b[dbStrTypeOff] = 1 // ASCII strings for the test fixture
+	b[dbStrTypeOff] = 1
 	b[dbOSIDOff] = 0
 	b[dbOSVerOff] = 0
 }
@@ -41,11 +40,9 @@ func writeCommon(b []byte, typ [4]byte, off uint16) {
 // putString places an ASCII NUL-terminated string at offset and records its
 // TAPE_POSITION (size, pos) pair at the tapePosOff field offset.
 func putString(b []byte, tapePosOff int, offset int, s string) {
-	size := len(s) + 1 // include NUL terminator
-	// size (uint16 LE)
+	size := len(s) + 1
 	b[tapePosOff] = byte(size)
 	b[tapePosOff+1] = byte(size >> 8)
-	// pos (uint16 LE)
 	b[tapePosOff+2] = byte(offset)
 	b[tapePosOff+3] = byte(offset >> 8)
 	copy(b[offset:], s)
@@ -59,7 +56,6 @@ func newBlock() []byte {
 func buildTape() []byte {
 	b := newBlock()
 	writeCommon(b, dbTAPE, 0)
-	// logical block size the whole archive uses (uint16 LE)
 	putU16(b, tapeFLBSizeOff, testFLBSize)
 	dt := encodeDateTime(time.Date(2005, 6, 1, 12, 30, 45, 0, time.Local))
 	copy(b[tapeCTimeOff:], dt[:])
@@ -69,7 +65,6 @@ func buildTape() []byte {
 func buildSSET() []byte {
 	b := newBlock()
 	writeCommon(b, dbSSET, 0)
-	// set number = 1
 	b[ssetNumOff], b[ssetNumOff+1] = 1, 0
 	b[ssetMajorOff] = 3
 	b[ssetMinorOff] = 0
@@ -108,7 +103,6 @@ func buildFILE(id, dirid uint32, name string, mtime time.Time, content []byte) [
 		streamStart += 4 - m
 	}
 
-	// preamble: common DB + FILE fields + name + STAN stream header
 	preamble := make([]byte, streamStart+streamHeaderSize)
 	writeCommon(preamble, dbFILE, uint16(streamStart))
 	putU32(preamble, fileIDOff, id)
@@ -123,7 +117,6 @@ func buildFILE(id, dirid uint32, name string, mtime time.Time, content []byte) [
 	out.Write(preamble)
 	out.Write(content)
 
-	// 4-byte align before the SPAD stream header.
 	if m := out.Len() % 4; m != 0 {
 		out.Write(bytes.Repeat([]byte{0}, 4-m))
 	}
@@ -147,7 +140,6 @@ func buildFILE(id, dirid uint32, name string, mtime time.Time, content []byte) [
 func buildESET() []byte {
 	b := newBlock()
 	writeCommon(b, dbESET, 0)
-	// FDD media sequence number = 1, data set number = 1.
 	putU16(b, esetSeqOff, 1)
 	putU16(b, esetSetOff, 1)
 	return b

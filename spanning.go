@@ -137,7 +137,6 @@ func (r *Reader) resyncContinuation() error {
 
 		switch bt {
 		case dbTAPE:
-			// Continuation media header: adopt its logical block size.
 			if err := r.ensure(tapeFLBSizeOff + 2); err != nil {
 				return err
 			}
@@ -150,12 +149,10 @@ func (r *Reader) resyncContinuation() error {
 				return err
 			}
 		case dbVOLB:
-			// Restores the source volume/device context.
 			if _, err := r.restoreVolb(); err != nil {
 				return err
 			}
 		case dbDIRB:
-			// Restores the directory context.
 			if _, err := r.restoreDirb(); err != nil {
 				return err
 			}

@@ -20,7 +20,6 @@ type Reader struct {
 	abspos  int64  // absolute position in the underlying stream
 	strType uint8  // string encoding for the current block
 
-	// current stream descriptor state
 	streamOff       uint32 // offset of the current stream header within blk
 	streamLen       int64  // total length of the current stream's data
 	streamDid       int64  // bytes of current stream data consumed so far
@@ -33,32 +32,26 @@ type Reader struct {
 	lastStream      bool   // a SPAD stream has been seen (end of object streams)
 	streamContinued bool   // current data stream is a cross-media continuation
 
-	// current entry state
 	cur       *Header
 	inData    bool  // positioned within the file's STAN data stream
 	dataRem   int64 // remaining bytes of the file's STAN data
 	entryDone bool  // current entry has been fully consumed
 
-	// path context
 	volume string
 	cwd    string
 	cwdID  uint32
 
-	// media spanning (EOTM / continuation) support
 	nextMedia func() (io.Reader, error) // supplies the next physical medium
 	mediaSeq  int                       // number of continuation media consumed
 	peek      []byte                    // read-ahead bytes pending delivery (probe buffer)
 
-	// metadata
 	tape *TapeInfo
 	set  *SetInfo
 
 	sawESET bool
 
-	// eset is the metadata from the most recent end-of-set (ESET) block.
 	eset *ESetInfo
 
-	// corrupt is the corrupt-object count reported by the most recent ESET.
 	corrupt uint32
 
 	scratch [4096]byte
@@ -425,7 +418,7 @@ func (r *Reader) Next() (*Header, error) {
 				return r.endOrError(err)
 			}
 			if r.switchMedium() {
-				continue // resume scanning the continuation medium
+				continue
 			}
 			return nil, io.EOF
 		case dbSFMB, dbESPB, dbCFIL:

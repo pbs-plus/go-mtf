@@ -8,14 +8,10 @@ import (
 	"time"
 )
 
-// --- helpers for building spec-compliant spanned media -----------------------
-
 // setAttr writes the common Block Attributes (offset 4) of a block.
 func setAttr(b []byte, attr uint32) {
 	binary.LittleEndian.PutUint32(b[dbAttrOff:], attr)
 }
-
-// buildTapeAttr builds a TAPE block with the given attributes and FLB size.
 func buildTapeAttr(attr uint32, flbsize int) []byte {
 	b := newBlock()
 	writeCommon(b, dbTAPE, 0)
@@ -165,8 +161,6 @@ func (m *mediumReader) next() (io.Reader, error) {
 	}
 	return bytes.NewReader(m.media[m.cursor]), nil
 }
-
-// --- tests -------------------------------------------------------------------
 
 // TestSpanningMidFile verifies a file whose STAN data stream is split across
 // two media is reassembled byte-for-byte.

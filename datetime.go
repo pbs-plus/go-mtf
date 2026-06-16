@@ -15,8 +15,8 @@ func decodeDateTime(b []byte, off int) time.Time {
 	x0, x1, x2, x3, x4 := b[off], b[off+1], b[off+2], b[off+3], b[off+4]
 
 	year := int(uint16(x0)<<6 | uint16(x1)>>2)
-	month := int((x1&0x03)<<2 | x2>>6) // 1-12
-	day := int((x2 & 0x3E) >> 1)       // 1-31
+	month := int((x1&0x03)<<2 | x2>>6)
+	day := int((x2 & 0x3E) >> 1)
 	hour := int((x2&0x01)<<4 | x3>>4)
 	minute := int((x3&0x0F)<<2 | x4>>6)
 	second := int(x4 & 0x3F)
