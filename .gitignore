@@ -1,0 +1,4 @@
+*.test
+/tmp/
+sample.bkf
+out.tar
