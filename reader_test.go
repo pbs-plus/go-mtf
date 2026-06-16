@@ -202,13 +202,17 @@ func TestReaderEntries(t *testing.T) {
 
 	var got []wantEntry
 	for {
-		h, err := r.Next()
+		blk, err := r.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			t.Fatalf("Next: unexpected error: %v", err)
 		}
+		if blk.Kind != KindEntry {
+			continue
+		}
+		h := blk.Header
 		entry := wantEntry{typ: h.Type, name: h.Name, size: h.Size}
 		if h.Type == EntryFile {
 			body, err := io.ReadAll(r)
@@ -233,14 +237,14 @@ func TestReaderEntries(t *testing.T) {
 func TestReaderSetAndTape(t *testing.T) {
 	r := NewReader(bytes.NewReader(buildArchive()))
 	for {
-		h, err := r.Next()
+		blk, err := r.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			t.Fatal(err)
 		}
-		_ = h
+		_ = blk
 	}
 
 	if tp := r.Tape(); tp == nil {
@@ -261,13 +265,17 @@ func TestReaderSkipWithoutRead(t *testing.T) {
 	r := NewReader(bytes.NewReader(buildArchive()))
 	var names []string
 	for {
-		h, err := r.Next()
+		blk, err := r.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			t.Fatal(err)
 		}
+		if blk.Kind != KindEntry {
+			continue
+		}
+		h := blk.Header
 		names = append(names, h.Name)
 	}
 	want := []string{
@@ -282,6 +290,40 @@ func TestReaderSkipWithoutRead(t *testing.T) {
 		if names[i] != want[i] {
 			t.Errorf("names[%d] = %q, want %q", i, names[i], want[i])
 		}
+	}
+}
+
+// TestBlockKinds verifies the typed block iterator yields the expected kinds in
+// the expected order for a normal (data + catalog) archive, and that the data
+// set end carries the catalog. The block sequence is what makes a medium's role
+// explicit.
+func TestBlockKinds(t *testing.T) {
+	r := NewReader(bytes.NewReader(buildArchive()))
+	var kinds []BlockKind
+	var files int
+	for {
+		b, err := r.Next()
+		if err != nil {
+			break
+		}
+		kinds = append(kinds, b.Kind)
+		if b.Kind == KindEntry && b.Header.Type == EntryFile {
+			files++
+		}
+	}
+	// A normal archive: media, set, then entries, then at least one set-end.
+	if len(kinds) == 0 || kinds[0] != KindMedia {
+		t.Fatalf("expected first block KindMedia, got %v", kinds)
+	}
+	if len(kinds) < 2 || kinds[1] != KindSet {
+		t.Fatalf("expected second block KindSet, got %v", kinds)
+	}
+	if files != 3 {
+		t.Errorf("file entries = %d, want 3", files)
+	}
+	// The archive must end with a KindSetEnd (data set closed).
+	if kinds[len(kinds)-1] != KindSetEnd {
+		t.Errorf("last block = %v, want KindSetEnd", kinds[len(kinds)-1])
 	}
 }
 
@@ -301,13 +343,17 @@ func TestReadChunked(t *testing.T) {
 	r := NewReader(bytes.NewReader(buf.Bytes()))
 	var got bytes.Buffer
 	for {
-		h, err := r.Next()
+		blk, err := r.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			t.Fatal(err)
 		}
+		if blk.Kind != KindEntry {
+			continue
+		}
+		h := blk.Header
 		if h.Type == EntryFile {
 			n, err := io.Copy(&got, r)
 			if err != nil {

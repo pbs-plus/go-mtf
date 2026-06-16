@@ -111,10 +111,14 @@ func streamArchive(entries ...[]byte) []byte {
 // nextOfType advances r until it returns an entry of the given type.
 func nextOfType(r *Reader, want EntryType) *Header {
 	for {
-		h, err := r.Next()
+		blk, err := r.Next()
 		if err != nil {
 			panic(err)
 		}
+		if blk.Kind != KindEntry {
+			continue
+		}
+		h := blk.Header
 		if h.Type == want {
 			return h
 		}
@@ -179,13 +183,17 @@ func TestMaterializeAdvancesAcrossEntries(t *testing.T) {
 
 	seen := 0
 	for {
-		h, err := r.Next()
+		blk, err := r.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
+		if blk.Kind != KindEntry {
+			continue
+		}
+		h := blk.Header
 		if h.Type != EntryFile {
 			continue
 		}

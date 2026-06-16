@@ -13,8 +13,13 @@ mtftar.
 
 ## Library
 
-The [`mtf`](https://pkg.go.dev/github.com/pbs-plus/go-mtf) package mirrors the
-`archive/tar` API:
+The [`mtf`](https://pkg.go.dev/github.com/pbs-plus/go-mtf) package exposes MTF
+as a typed block iterator. `Reader.Next` returns a `*Block` whose `Kind`
+tells you what was encountered — a medium starting, a data set starting, an
+extractable entry, or a data set ending (with its catalog). This makes a
+medium's role explicit: one with entries but no trailing data-set-end is
+data-only (its set continues on the next medium); one whose data-set-end carries
+a catalog with no file-data entries is catalog-heavy; one with both is normal.
 
 ```go
 r, err := mtf.Open("backup.bkf")
@@ -24,7 +29,7 @@ if err != nil {
 defer r.Close()
 
 for {
-    h, err := r.Next()
+    b, err := r.Next()
     if err == io.EOF {
         break
     }
@@ -32,22 +37,27 @@ for {
         log.Fatal(err)
     }
 
-    fmt.Println(h.Name)
-    if h.Type == mtf.EntryFile {
-        if _, err := io.Copy(os.Stdout, r); err != nil {
-            log.Fatal(err)
+    switch b.Kind {
+    case mtf.KindMedia:   // b.Tape: sequence, family ID, catalog type
+    case mtf.KindSet:     // b.Set: data-set metadata
+    case mtf.KindEntry:   // b.Header is fully materialized
+        fmt.Println(b.Header.Name)
+        if b.Header.Type == mtf.EntryFile {
+            if _, err := io.Copy(os.Stdout, r); err != nil {
+                log.Fatal(err)
+            }
         }
+    case mtf.KindSetEnd:  // b.ESet + b.Catalog (the MBC, nil if none)
     }
 }
 ```
 
-### Types
-
-| Entry type        | Meaning                                  |
-| ----------------- | ---------------------------------------- |
-| `mtf.EntryVolume` | A source volume/device (`VOLB`).         |
-| `mtf.EntryDirectory` | A directory (`DIRB`).                 |
-| `mtf.EntryFile`   | A regular file (`FILE`); data via `Reader.Read`. |
+| Block kind     | Meaning                                                         |
+| -------------- | --------------------------------------------------------------- |
+| `mtf.KindMedia`  | A medium (`TAPE`) started; `Block.Tape` holds its metadata.   |
+| `mtf.KindSet`    | A data set (`SSET`) started; `Block.Set` holds its metadata.  |
+| `mtf.KindEntry`  | An extractable object (`VOLB`/`DIRB`/`FILE`); read data via `Reader.Read`. |
+| `mtf.KindSetEnd` | A data set (`ESET`) ended; `Block.Catalog` carries any catalog. |
 
 `Reader.Tape()` and `Reader.Set()` expose metadata from the `TAPE` and `SSET`
 descriptor blocks respectively. `Reader.ESet()` exposes the most recent

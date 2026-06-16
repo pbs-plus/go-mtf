@@ -82,7 +82,7 @@ func main() {
 	}
 
 	for {
-		h, err := r.Next()
+		blk, err := r.Next()
 		if err == io.EOF {
 			break
 		}
@@ -90,7 +90,12 @@ func main() {
 			log.Fatalf("read error: %v", err)
 		}
 
-		if *setno != 0 && int(h.SetNumber) != *setno {
+		if blk.Kind != mtf.KindEntry {
+			continue
+		}
+		h := blk.Header
+
+		if *setno != 0 && int(r.Set().Number) != *setno {
 			// Drain the entry's data so the reader can advance.
 			if _, err := io.Copy(io.Discard, r); err != nil && err != io.EOF {
 				log.Fatal(err)

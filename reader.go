@@ -385,9 +385,25 @@ func (r *Reader) streamNext() error {
 	return nil
 }
 
-// Next advances to the next entry in the archive and returns its header.
-// It returns io.EOF when the end of the archive is reached.
-func (r *Reader) Next() (*Header, error) {
+// Next advances through the MTF stream and returns the next structural block.
+// The returned [Block].Kind tells you what was encountered:
+//
+//   - KindMedia: a medium (MTF_TAPE) started. Block.Tape holds its metadata.
+//   - KindSet: a data set (MTF_SSET) started. Block.Set holds its metadata.
+//   - KindEntry: an extractable object (MTF_VOLB/DIRB/FILE). Block.Header is
+//     fully materialized; call [Reader.Read] to stream its standard data.
+//   - KindSetEnd: a data set (MTF_ESET) ended. Block.ESet holds its metadata
+//     and Block.Catalog carries any Media Based Catalog (nil if none).
+//
+// The medium's role is self-evident from the block sequence: a medium with
+// KindEntry blocks but no trailing KindSetEnd is data-only (its data set
+// continues on the next medium); one whose KindSetEnd carries a Catalog with no
+// file-data entries is catalog-heavy; one with both is the normal case.
+//
+// Media spanning is handled transparently: when a continuation is registered
+// via [Reader.SetContinuation], each consumed medium yields its own KindMedia.
+// Next returns io.EOF when the archive is fully consumed.
+func (r *Reader) Next() (*Block, error) {
 	if r.cur != nil && !r.entryDone {
 		if err := r.finishEntry(); err != nil {
 			return nil, err
@@ -416,37 +432,49 @@ func (r *Reader) Next() (*Header, error) {
 		case dbTAPE:
 			// A TAPE block seen mid-stream is a continuation media header when
 			// spanning; otherwise the initial header. Adopt its logical block
-			// size and continue.
+			// size, advance past it, and expose it as a new medium.
 			if err := r.parseTape(); err != nil {
 				return nil, err
 			}
+			if err := r.scanNext(); err != nil {
+				return nil, r.endOrError(err)
+			}
+			return &Block{Kind: KindMedia, Tape: r.tape}, nil
 		case dbSSET:
 			if err := r.parseSet(); err != nil {
 				return nil, err
 			}
+			if err := r.scanNext(); err != nil {
+				return nil, r.endOrError(err)
+			}
+			return &Block{Kind: KindSet, Set: r.set}, nil
 		case dbESET:
 			r.sawESET = true
 			if err := r.parseEset(); err != nil {
 				return nil, err
 			}
-			// The first ESET of a data set may carry the Media Based Catalog as
-			// attached streams (TFDD/TSMP). Capture any catalog streams now so
-			// they are not lost; the walk ends on the terminal SPAD, positioning
-			// the reader on the following block.
+			// The ESET may carry the Media Based Catalog as attached streams
+			// (TFDD/TSMP). Capture any catalog streams now so they are not lost;
+			// the walk ends on the terminal SPAD.
 			if err := r.captureCatalog(); err != nil {
-				return r.endOrError(err)
+				return nil, r.endOrError(err)
 			}
-		case dbEOTM:
-			// End of medium between entries: switch to the continuation medium.
 			if err := r.scanNext(); err != nil {
-				return r.endOrError(err)
+				return nil, r.endOrError(err)
+			}
+			return &Block{Kind: KindSetEnd, ESet: r.eset, Catalog: r.Catalog()}, nil
+		case dbEOTM:
+			// End of medium between entries: switch to the continuation medium,
+			// whose leading TAPE block will be exposed as the next KindMedia.
+			if err := r.scanNext(); err != nil {
+				return nil, r.endOrError(err)
 			}
 			if r.switchMedium() {
 				continue
 			}
 			return nil, io.EOF
 		case dbSFMB, dbESPB, dbCFIL:
-			// metadata / padding blocks: nothing to expose
+			// filemark / padding / corrupt-placeholder blocks: nothing to expose
 		case dbVOLB:
 			if u32(r.blk, dbAttrOff)&AttrContinuation != 0 {
 				// Continuation volume context: restore silently, no entry.
@@ -459,9 +487,9 @@ func (r *Reader) Next() (*Header, error) {
 					return nil, err
 				}
 				if err := r.beginEntry(h); err != nil {
-					return r.endOrError(err)
+					return nil, r.endOrError(err)
 				}
-				return h, nil
+				return &Block{Kind: KindEntry, Header: h}, nil
 			}
 		case dbDIRB:
 			if u32(r.blk, dbAttrOff)&AttrContinuation != 0 {
@@ -475,9 +503,9 @@ func (r *Reader) Next() (*Header, error) {
 					return nil, err
 				}
 				if err := r.beginEntry(h); err != nil {
-					return r.endOrError(err)
+					return nil, r.endOrError(err)
 				}
-				return h, nil
+				return &Block{Kind: KindEntry, Header: h}, nil
 			}
 
 		case dbFILE:
@@ -500,30 +528,30 @@ func (r *Reader) Next() (*Header, error) {
 				// block boundary so the reader is positioned cleanly.
 				r.entryDone = true
 				if err := r.scanNext(); err != nil {
-					return r.endOrError(err)
+					return nil, r.endOrError(err)
 				}
 			} else {
 				r.entryDone = false
 			}
-			return h, nil
+			return &Block{Kind: KindEntry, Header: h}, nil
 
 		default:
 			// unknown or empty (dead) block: skip and continue
 		}
 
 		if err := r.scanNext(); err != nil {
-			return r.endOrError(err)
+			return nil, r.endOrError(err)
 		}
 	}
 }
 
 // endOrError converts a trailing read error into io.EOF once a data-set end has
 // been seen (archives may omit trailing block padding), otherwise returns err.
-func (r *Reader) endOrError(err error) (*Header, error) {
+func (r *Reader) endOrError(err error) error {
 	if r.sawESET && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) {
-		return nil, io.EOF
+		return io.EOF
 	}
-	return nil, err
+	return err
 }
 
 // beginEntry positions the reader at the first data stream of the current

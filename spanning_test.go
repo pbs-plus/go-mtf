@@ -200,13 +200,17 @@ func TestSpanningMidFile(t *testing.T) {
 	var gotFile bytes.Buffer
 	var sawAfter bool
 	for {
-		h, err := r.Next()
+		blk, err := r.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
+		if blk.Kind != KindEntry {
+			continue
+		}
+		h := blk.Header
 		if h.Type != EntryFile {
 			continue
 		}
@@ -270,13 +274,17 @@ func TestSpanningMultiMedia(t *testing.T) {
 	r := newSpannedReader([][]byte{m1.Bytes(), m2.Bytes(), m3.Bytes()})
 	var got bytes.Buffer
 	for {
-		h, err := r.Next()
+		blk, err := r.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
+		if blk.Kind != KindEntry {
+			continue
+		}
+		h := blk.Header
 		if h.Type == EntryFile && h.Name == "C:/Users/split.dat" {
 			if _, err := io.Copy(&got, r); err != nil {
 				t.Fatalf("read: %v", err)
@@ -315,13 +323,17 @@ func TestSpanningSkippedFile(t *testing.T) {
 	r := newSpannedReader([][]byte{m1.Bytes(), m2.Bytes()})
 	var names []string
 	for {
-		h, err := r.Next()
+		blk, err := r.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
+		if blk.Kind != KindEntry {
+			continue
+		}
+		h := blk.Header
 		names = append(names, h.Name)
 		// deliberately do NOT read file data
 	}
@@ -352,13 +364,17 @@ func TestSpanningNoContinuation(t *testing.T) {
 
 	r := NewReader(bytes.NewReader(m1.Bytes())) // no SetContinuation
 	for {
-		h, err := r.Next()
+		blk, err := r.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
+		if blk.Kind != KindEntry {
+			continue
+		}
+		h := blk.Header
 		if h.Type == EntryFile {
 			var buf bytes.Buffer
 			n, rerr := io.Copy(&buf, r)

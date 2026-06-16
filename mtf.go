@@ -207,6 +207,40 @@ type ESetInfo struct {
 	CreateTime       time.Time
 }
 
+// Block is a single structural element yielded by [Reader.Next]. Its Kind
+// discriminates which field is populated. The non-entry fields (Tape, Set,
+// ESet, Catalog) reference shared reader state and are overwritten on the next
+// call to Next; callers should copy any values they need to retain.
+type Block struct {
+	Kind    BlockKind
+	Tape    *TapeInfo // populated when Kind == KindMedia
+	Set     *SetInfo  // populated when Kind == KindSet
+	Header  *Header   // populated when Kind == KindEntry
+	ESet    *ESetInfo // populated when Kind == KindSetEnd
+	Catalog *Catalog  // populated when Kind == KindSetEnd (nil if the set had no catalog)
+}
+
+// BlockKind identifies the kind of MTF structure a [Block] represents.
+type BlockKind uint8
+
+const (
+	// KindMedia is yielded for an MTF_TAPE descriptor block: the start of a
+	// physical medium. With media spanning enabled, one iteration yields a
+	// KindMedia block for each medium as it is consumed.
+	KindMedia BlockKind = iota
+	// KindSet is yielded for an MTF_SSET descriptor block: the start of a data
+	// set (one backup operation).
+	KindSet
+	// KindEntry is yielded for an extractable object descriptor (MTF_VOLB,
+	// MTF_DIRB or MTF_FILE). The header is fully materialized; call [Reader.Read]
+	// to stream the entry's standard data.
+	KindEntry
+	// KindSetEnd is yielded for an MTF_ESET descriptor block: a data set ended.
+	// Any Media Based Catalog carried by the set's streams is attached as
+	// Catalog (nil when the set recorded no catalog).
+	KindSetEnd
+)
+
 // Block descriptor types (the first four bytes of a common descriptor block).
 var (
 	dbTAPE = [4]byte{'T', 'A', 'P', 'E'}

@@ -155,10 +155,14 @@ func TestSurfaceHeaderFields(t *testing.T) {
 	r := NewReader(bytes.NewReader(data))
 	var sawFile, sawVol bool
 	for {
-		h, err := r.Next()
+		blk, err := r.Next()
 		if err != nil {
 			break
 		}
+		if blk.Kind != KindEntry {
+			continue
+		}
+		h := blk.Header
 		_ = h.DisplayableSize
 		switch h.Type {
 		case EntryVolume:
@@ -237,10 +241,14 @@ func TestStreamFlagsParsing(t *testing.T) {
 	r := NewReader(bytes.NewReader(buf.Bytes()))
 	var found bool
 	for {
-		h, err := r.Next()
+		blk, err := r.Next()
 		if err != nil {
 			break
 		}
+		if blk.Kind != KindEntry {
+			continue
+		}
+		h := blk.Header
 		if h.Type == EntryFile && h.Name == "C:/Users/c.txt" {
 			found = true
 			if !h.Compressed {
