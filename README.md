@@ -112,6 +112,47 @@ block, for advisory corruption detection. `Reader.Checksum()` returns both the
 stored and recomputed values. Some writers emit a zero checksum, so treat the
 result as advisory.
 
+### Media Based Catalog
+
+MTF defines a *Media Based Catalog* (MBC) written as data streams on the
+End-of-Set (`ESET`) block (spec section 7). It has two parts:
+
+* **File/Directory Detail** (`TFDD` stream) — a per-data-set index of every
+  volume, directory and file, each annotated with the media sequence number and
+  Format Logical Address of its descriptor block.
+* **Set Map** (`TSMP` stream) — a *cumulative* index of every data set in the
+  whole Media Family (one entry per backup/host, each followed by its source
+  volumes and machine name). The Set Map on the last cartridge is the most
+  complete; it is the structure to consult for "which backups live in this
+  family and on which media".
+
+After a data set ends, `Reader.Catalog()` returns the parsed catalog as a
+`*mtf.Catalog` (`SetMap *SetMap`, `FDD []CatalogEntry`). It is `nil` when no
+MBC streams were present.
+
+The standard Type 1 binary layouts are parsed. A vendor may carry a
+non-standard payload inside the standard stream envelope (for example a Backup
+Exec XML catalog in a `TFDD` stream); in that case the parsed fields are left
+empty and the raw stream payload is exposed as `Catalog.RawFDD`/
+`Catalog.RawSetMap` for a vendor-specific parser:
+
+```go
+for {
+	h, err := r.Next()
+	if err == io.EOF { break }
+	if err != nil { log.Fatal(err) }
+	_ = h
+}
+c := r.Catalog()
+if c != nil && c.SetMap != nil {
+	for _, ds := range c.SetMap.Entries {
+		for _, vol := range ds.Volumes {
+			fmt.Println("host:", vol.MachineName, "volume:", vol.Name)
+		}
+	}
+}
+```
+
 ### Spanning multiple media
 
 A backup data set may be split across several physical media (tapes or `.bkf`

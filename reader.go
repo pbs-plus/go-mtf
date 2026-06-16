@@ -60,6 +60,12 @@ type Reader struct {
 
 	corrupt uint32
 
+	// Media Based Catalog: raw payloads captured from the ESET's TFDD/TSMP (or
+	// FDD2/MAP2) streams, and the lazily-parsed catalog built from them.
+	catFDDraw []byte
+	catSMPraw []byte
+	catalog   *Catalog
+
 	scratch [4096]byte
 }
 
@@ -422,6 +428,13 @@ func (r *Reader) Next() (*Header, error) {
 			r.sawESET = true
 			if err := r.parseEset(); err != nil {
 				return nil, err
+			}
+			// The first ESET of a data set may carry the Media Based Catalog as
+			// attached streams (TFDD/TSMP). Capture any catalog streams now so
+			// they are not lost; the walk ends on the terminal SPAD, positioning
+			// the reader on the following block.
+			if err := r.captureCatalog(); err != nil {
+				return r.endOrError(err)
 			}
 		case dbEOTM:
 			// End of medium between entries: switch to the continuation medium.
