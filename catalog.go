@@ -25,6 +25,27 @@ import "time"
 // case the standard parser leaves the parsed fields empty and exposes the raw
 // stream payload (RawFDD/RawSetMap) for a vendor-specific parser.
 
+// CatalogData exposes the raw, uninterpreted catalog stream payloads captured
+// from a data set's ESET block. It decouples vendor-specific catalog parsers
+// (for example a Backup Exec XML parser) from this package's concrete [Catalog]
+// type: a vendor parser accepts a CatalogData and works purely from the bytes.
+//
+// [Catalog] satisfies CatalogData via its [Catalog.Raw] method.
+type CatalogData interface {
+	// Raw returns the captured catalog stream payloads. FDD is the
+	// File/Directory Detail ('TFDD'/'FDD2') payload and SetMap is the Set Map
+	// ('TSMP'/'MAP2') payload; either may be nil if the stream was absent. For a
+	// standard Type 1 catalog these are binary records; a writer may substitute a
+	// vendor-specific payload (so a vendor parser takes over from Raw.FDD).
+	Raw() CatalogRaw
+}
+
+// CatalogRaw holds the raw, uninterpreted catalog stream payloads.
+type CatalogRaw struct {
+	FDD    []byte
+	SetMap []byte
+}
+
 // Catalog holds the parsed Media Based Catalog of the most recently completed
 // data set, available via [Reader.Catalog]. It is nil when no MBC streams were
 // present on the medium, or when the catalog was written in an unrecognized
@@ -46,6 +67,12 @@ type Catalog struct {
 	// RawSetMap is the unparsed payload of the Set Map data stream, populated
 	// whenever a Set Map stream was captured.
 	RawSetMap []byte
+}
+
+// Raw returns the captured catalog stream payloads, implementing [CatalogData].
+// A vendor-specific catalog parser consumes [CatalogRaw.FDD] directly.
+func (c *Catalog) Raw() CatalogRaw {
+	return CatalogRaw{FDD: c.RawFDD, SetMap: c.RawSetMap}
 }
 
 // CatalogEntryType identifies the kind of object a [CatalogEntry] records.

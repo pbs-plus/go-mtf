@@ -136,32 +136,73 @@ End-of-Set (`ESET`) block (spec section 7). It has two parts:
   complete; it is the structure to consult for "which backups live in this
   family and on which media".
 
-After a data set ends, `Reader.Catalog()` returns the parsed catalog as a
-`*mtf.Catalog` (`SetMap *SetMap`, `FDD []CatalogEntry`). It is `nil` when no
-MBC streams were present.
+The `KindSetEnd` block carries the catalog on `Block.Catalog` (`*mtf.Catalog`,
+with `SetMap *SetMap` and `FDD []CatalogEntry`). It is `nil` when no MBC
+streams were present. The standard Type 1 binary layouts are parsed; a vendor
+may carry a non-standard payload inside the standard stream envelope (for
+example a Backup Exec XML catalog in a `TFDD` stream), in which case the parsed
+fields are left empty and the raw stream payload is exposed as
+`Catalog.RawFDD`/`Catalog.RawSetMap` for a vendor-specific parser.
 
-The standard Type 1 binary layouts are parsed. A vendor may carry a
-non-standard payload inside the standard stream envelope (for example a Backup
-Exec XML catalog in a `TFDD` stream); in that case the parsed fields are left
-empty and the raw stream payload is exposed as `Catalog.RawFDD`/
-`Catalog.RawSetMap` for a vendor-specific parser:
+`Catalog` implements the [`CatalogData`](#catalogdata-interface) interface
+(`Raw() CatalogRaw`), which decouples vendor parsers from the concrete type:
 
 ```go
 for {
-	h, err := r.Next()
-	if err == io.EOF { break }
-	if err != nil { log.Fatal(err) }
-	_ = h
-}
-c := r.Catalog()
-if c != nil && c.SetMap != nil {
-	for _, ds := range c.SetMap.Entries {
-		for _, vol := range ds.Volumes {
-			fmt.Println("host:", vol.MachineName, "volume:", vol.Name)
-		}
-	}
+    b, err := r.Next()
+    if err == io.EOF { break }
+    if err != nil { log.Fatal(err) }
+    if b.Kind != mtf.KindSetEnd { continue }
+    c := b.Catalog
+    if c == nil || c.SetMap == nil { continue }
+    for _, ds := range c.SetMap.Entries {
+        for _, vol := range ds.Volumes {
+            fmt.Println("host:", vol.MachineName, "volume:", vol.Name)
+        }
+    }
 }
 ```
+
+#### Backup Exec catalogs (`becatalog`)
+
+Backup Exec reuses the standard `TFDD` stream envelope but writes its own
+catalog format (a binary prefix + XML document) instead of the spec's binary
+records. The companion package
+[`github.com/pbs-plus/go-mtf/becatalog`](./becatalog) decodes it, consuming the
+raw FDD bytes through the `CatalogData` interface so go-mtf stays vendor-free:
+
+```go
+import "github.com/pbs-plus/go-mtf/becatalog"
+
+for {
+    b, err := r.Next()
+    if err == io.EOF { break }
+    if err != nil { log.Fatal(err) }
+    if b.Kind != mtf.KindSetEnd || b.Catalog == nil { continue }
+    cat, err := becatalog.Parse(b.Catalog) // takes mtf.CatalogData
+    if errors.Is(err, becatalog.ErrNotBackupExec) { continue }
+    if err != nil { log.Fatal(err) }
+    fmt.Println("cartridge:", cat.Cartridges[0].Label, "dirs:", cat.Image.NumDirectories)
+}
+```
+
+`becatalog.Parse` returns `ErrNotBackupExec` for non-Backup-Exec payloads, so a
+caller can fall back to the standard MTF binary parser in `Catalog.FDD`.
+
+### CatalogData interface
+
+`CatalogData` exposes the raw, uninterpreted catalog stream payloads and
+decouples vendor-specific catalog parsers from this package:
+
+```go
+type CatalogData interface {
+    Raw() CatalogRaw // { FDD, SetMap []byte }
+}
+```
+
+`*Catalog` satisfies it; a vendor parser (such as `becatalog`) accepts a
+`CatalogData` and works purely from the bytes, keeping this package
+spec-faithful.
 
 ### Spanning multiple media
 
@@ -240,7 +281,11 @@ go-mtf/
   datetime.go   MTF date/time decoding
   strings.go    MTF string (UTF-16LE / ASCII) decoding
   reader.go     the streaming Reader (scanner + streamer core)
+  catalog.go    Media Based Catalog (standard MBC binary parser + CatalogData)
+  spanning.go   multi-media spanning / continuation support
+  streams.go    data stream handling (STAN/sparse/continued)
   reader_test.go  self-contained tests with an in-memory MTF generator
+  becatalog/    companion package: Backup Exec XML catalog parser
   cmd/mtftar/   the command-line tool
 ```
 
