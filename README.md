@@ -66,47 +66,43 @@ also reports the standard data stream's properties:
 - `Compressed` / `Encrypted` / `Sparse` — decoded stream flags,
 - `StreamChecksum` — the stream header checksum field.
 
-> **Note:** compression, encryption and sparse expansion are *not* performed by
-> the library — these fields let a caller detect streams that need external
-> decoding. Raw stream bytes are delivered as stored.
+> **Note:** compression and decryption are *not* performed by the library —
+> these fields let a caller detect streams that need external decoding. Raw
+> stream bytes are delivered as stored. Sparse files **are** transparently
+> reconstructed (holes zero-filled) by `Read`.
 
-### Stream enumeration
+### Metadata streams (auto-materialized)
 
-By default `Reader.Next()` positions file entries at their standard data
-stream (STAN) and `Reader.Read()` returns its bytes, skipping any metadata
-streams that precede it. Directory and volume entries expose their streams
-through the iterator below.
+`Reader.Next()` transparently walks each object's data streams and
+materializes the metadata a faithful extraction needs directly onto the
+returned `Header`. The caller never deals with stream types, lengths or
+alignment:
 
-For full metadata access — including streams that precede a file's STAN, such
-as NTFS security descriptors (NACL), extended attributes (NTEA), object IDs
-(NTOI) and sparse maps (SPAR) — call `Reader.EnumerateStreams(true)` *before*
-the first `Next`, then enumerate each entry's streams with `NextStream`:
+- `Header.SecurityDescriptor` — the raw NTFS security descriptor (NACL
+  stream), a self-relative `SECURITY_DESCRIPTOR` as produced by the Win32
+  `BackupRead` API. Present on both file and directory entries.
+- `Header.ExtendedAttributes` — the raw NT extended-attribute data (NTEA
+  stream).
+- `Header.SparseExtents` — the parsed sparse map (`[]SparseExtent`, one per
+  SPAR stream) for sparse files; `Read` zero-fills the holes.
 
 ```go
-r.EnumerateStreams(true)
 for {
 	h, err := r.Next()
 	if err == io.EOF { break }
-	for {
-		s, err := r.NextStream()
-		if err == io.EOF { break }
-		switch s.Type {
-		case mtf.StreamNACL: // NTFS security descriptor
-			sd := make([]byte, s.Length)
-			io.ReadFull(r, sd)
-		case mtf.StreamSTAN: // file content
-			io.Copy(out, r)
-		}
+	if h.Type == mtf.EntryFile {
+		io.Copy(out, r)            // file content (STAN)
+	}
+	if h.SecurityDescriptor != nil {
+		_ = h.SecurityDescriptor    // NTFS ACL, ready to convert
 	}
 }
 ```
 
-`NextStream` returns a `*Stream` describing the type, length, compression/
-encryption algorithm IDs, attribute flags and checksum. `Reader.Read()` then
-yields the bytes of that stream; for a file whose STAN spans continuation
-media, the spanning is followed transparently. In enumerate mode
-`Header.Size` and the stream-derived flags are **not** populated by `Next` —
-read them from the STAN `Stream` instead.
+Other streams (object IDs, quotas, alternate data, per-stream checksums) have
+no pxar equivalent and are skipped. File content is streamed lazily through
+`Read` (spanning-aware); only the small metadata streams are buffered into
+the `Header`.
 
 ### Checksum verification
 

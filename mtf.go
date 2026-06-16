@@ -10,7 +10,11 @@
 // an End Of Tape Marker (EOTM) is encountered — whether between entries or in
 // the middle of a file's data stream. See the MTF spec, section 8.
 //
-// The primary entry point is the [Reader], which mirrors the archive/tar API:
+// The primary entry point is the [Reader]. [Reader.Next] advances entry by
+// entry and transparently parses each object's data streams, materializing the
+// metadata a faithful extraction needs (NTFS security descriptors, extended
+// attributes, sparse maps) into the returned [Header] and positioning file
+// content for [Reader.Read]:
 //
 //	r, err := mtf.Open("backup.bkf")
 //	if err != nil { log.Fatal(err) }
@@ -23,6 +27,7 @@
 //		if h.Type == mtf.EntryFile {
 //			io.Copy(os.Stdout, r)
 //		}
+//		// h.SecurityDescriptor holds the NTFS ACL (files and directories).
 //	}
 package mtf
 
@@ -48,9 +53,6 @@ type Header struct {
 	// Name is the fully resolved path of the entry, formed from the source
 	// volume, directory chain and the entry name using "/" separators.
 	Name string
-	// Size is the length in bytes of the entry's standard (STAN) data stream.
-	// It is only non-zero for files.
-	Size int64
 	// ModTime is the modification time of the entry.
 	ModTime time.Time
 	// AccessTime is the last access time, if recorded.
@@ -84,21 +86,33 @@ type Header struct {
 	DirID uint32
 
 	// The following describe the file's standard (STAN) data stream and are
-	// meaningful for file entries.
+	// meaningful for file entries. They are populated by [Reader.Next].
 	//
+	// Size is the logical length in bytes of the file's content as delivered by
+	// [Reader.Read]. For a plain file this is the STAN stream length; for a
+	// sparse file it is the reconstructed (hole-filled) length; for a
+	// compressed/encrypted file it is the on-media (stored) byte count (see
+	// [Header.DisplayableSize] for the logical size in that case). It is zero
+	// for non-file entries.
+	Size int64
 	// CompressionAlgorithm is the registered ID of the algorithm used to
-	// compress the standard data stream, or zero if uncompressed. A non-zero
-	// value indicates [Header.Compressed] is set.
+	// compress the standard data stream, or zero if uncompressed.
 	CompressionAlgorithm uint16
 	// EncryptionAlgorithm is the registered ID of the algorithm used to
 	// encrypt the standard data stream, or zero if unencrypted.
 	EncryptionAlgorithm uint16
-	// Compressed reports whether the standard data stream is compressed.
+	// Compressed reports whether the standard data stream is compressed. The
+	// bytes returned by [Reader.Read] are still compressed; decompression is
+	// not performed.
 	Compressed bool
-	// Encrypted reports whether the standard data stream is encrypted.
+	// Encrypted reports whether the standard data stream is encrypted. The
+	// bytes returned by [Reader.Read] are still encrypted; decryption is not
+	// performed.
 	Encrypted bool
-	// Sparse reports whether the standard data stream is sparse
-	// (STREAM_IS_SPARSE). Sparse data is not transparently expanded.
+	// Sparse reports whether the file is sparse. For sparse files [Reader.Read]
+	// transparently reconstructs the logical content (holes are zero-filled)
+	// and [Header.SparseExtents] holds the parsed sparse map. The STREAM_IS_SPARSE
+	// bit is documented in MTF spec section 6.1.
 	Sparse bool
 	// StreamChecksum is the checksum field of the standard (STAN) data stream
 	// header (zero unless the stream is checksummed).
@@ -107,6 +121,31 @@ type Header struct {
 	// block's Displayable Size field. For uncompressed files it equals Size;
 	// for compressed or sparse objects it reflects the logical (expanded) size.
 	DisplayableSize uint64
+
+	// SecurityDescriptor holds the raw NTFS security descriptor (NACL stream)
+	// associated with the entry, if any. It is a self-relative security
+	// descriptor as produced by the Win32 BackupRead API. Present on both file
+	// and directory entries.
+	SecurityDescriptor []byte
+	// ExtendedAttributes holds the raw NT extended-attribute data (NTEA stream)
+	// associated with the entry, if any.
+	ExtendedAttributes []byte
+	// SparseExtents describes the sparse layout of a sparse file (one entry per
+	// SPAR stream), or nil for a non-sparse entry. Each extent carries the
+	// non-hole bytes located at [SparseExtent.Offset] in the logical file;
+	// [Reader.Read] fills the gaps with zero bytes. See MTF spec section 6.2.1.7.
+	SparseExtents []SparseExtent
+}
+
+// SparseExtent describes one contiguous block of non-hole data within a sparse
+// file, as parsed from a SPAR data stream. The logical file is reconstructed by
+// placing each extent's Data at Offset and zero-filling the gaps between
+// extents.
+type SparseExtent struct {
+	// Offset is the logical byte offset within the file where Data begins.
+	Offset int64
+	// Data is the non-hole byte content located at Offset.
+	Data []byte
 }
 
 // TapeInfo holds metadata from the MTF TAPE descriptor block.

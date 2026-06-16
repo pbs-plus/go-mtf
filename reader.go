@@ -32,15 +32,16 @@ type Reader struct {
 	lastStream      bool   // a SPAD stream has been seen (end of object streams)
 	streamContinued bool   // current data stream is a cross-media continuation
 
-	streamMode       bool  // EnumerateStreams: expose all streams, no auto-seek to STAN
-	streamModeActive bool  // NextStream has been used on the current entry
-	streamPrimed     bool  // first stream after Next is loaded but not yet returned
-	streamRemain     int64 // unread bytes of the currently selected stream
-
 	cur       *Header
 	inData    bool  // positioned within the file's STAN data stream
 	dataRem   int64 // remaining bytes of the file's STAN data
 	entryDone bool  // current entry has been fully consumed
+
+	// sparse reconstruction state (when the current STAN is STREAM_IS_SPARSE)
+	sparse       bool  // current entry's content is sparse
+	sparseIdx    int   // current SparseExtent index
+	sparsePos    int64 // offset within the current extent's Data
+	sparseCursor int64 // logical offset produced so far
 
 	volume string
 	cwd    string
@@ -387,8 +388,10 @@ func (r *Reader) Next() (*Header, error) {
 		}
 	}
 	r.inData = false
-	r.streamModeActive = false
-	r.streamPrimed = false
+	r.sparse = false
+	r.sparseIdx = 0
+	r.sparsePos = 0
+	r.sparseCursor = 0
 
 	r.dataRem = 0
 
@@ -442,12 +445,9 @@ func (r *Reader) Next() (*Header, error) {
 				if err != nil {
 					return nil, err
 				}
-				has, err := r.startEntryStreams()
-				if err != nil {
+				if err := r.beginEntry(h); err != nil {
 					return r.endOrError(err)
 				}
-				r.cur = h
-				r.entryDone = !has
 				return h, nil
 			}
 		case dbDIRB:
@@ -461,12 +461,9 @@ func (r *Reader) Next() (*Header, error) {
 				if err != nil {
 					return nil, err
 				}
-				has, err := r.startEntryStreams()
-				if err != nil {
+				if err := r.beginEntry(h); err != nil {
 					return r.endOrError(err)
 				}
-				r.cur = h
-				r.entryDone = !has
 				return h, nil
 			}
 
@@ -479,32 +476,21 @@ func (r *Reader) Next() (*Header, error) {
 				return nil, err
 			}
 			r.cur = h
-			r.entryDone = false
-			if r.streamMode {
-				// Expose the full stream sequence; do not pre-seek to STAN.
-				return h, nil
+			if err := r.materializeStreams(h); err != nil {
+				return nil, err
 			}
-			for r.streamType != StreamSTAN &&
-				r.streamType != StreamSPAD &&
-				!r.lastStream {
-				if err := r.streamNext(); err != nil {
-					return nil, err
+			if r.sparse {
+				r.finishSparse(h)
+			}
+			if !r.inData && !r.sparse {
+				// No standard data stream: nothing to read. Advance to the next
+				// block boundary so the reader is positioned cleanly.
+				r.entryDone = true
+				if err := r.scanNext(); err != nil {
+					return r.endOrError(err)
 				}
-			}
-			if r.streamType == StreamSTAN {
-				r.inData = true
-				r.dataRem = r.streamLen
-				h.Size = r.streamLen
-				h.CompressionAlgorithm = r.streamCompAlgo
-				h.EncryptionAlgorithm = r.streamEncAlgo
-				h.Compressed = r.streamMediaAttr&StreamMediaCompressed != 0
-				h.Encrypted = r.streamMediaAttr&StreamMediaEncrypted != 0
-				h.Sparse = r.streamSysAttr&StreamFSSparse != 0
-				h.StreamChecksum = r.streamChecksum
 			} else {
-				r.inData = false
-				r.dataRem = 0
-				h.Size = 0
+				r.entryDone = false
 			}
 			return h, nil
 
@@ -527,19 +513,57 @@ func (r *Reader) endOrError(err error) (*Header, error) {
 	return nil, err
 }
 
+// beginEntry positions the reader at the first data stream of the current
+// descriptor block (held in r.blk) and materializes the entry's metadata
+// streams into h. An entry with no streams (stream offset 0) is reported as
+// done. It is used by volume and directory entries, whose content — if any —
+// is purely metadata.
+func (r *Reader) beginEntry(h *Header) error {
+	off := uint32(u16(r.blk, dbOffOff))
+	if off == 0 {
+		// No streams recorded for this object: advance past the block.
+		if err := r.scanNext(); err != nil {
+			return err
+		}
+		r.cur = h
+		r.entryDone = true
+		return nil
+	}
+	if err := r.streamStart(); err != nil {
+		// No streams reachable: advance past the block.
+		if e2 := r.scanNext(); e2 != nil {
+			return e2
+		}
+		r.cur = h
+		r.entryDone = true
+		return nil
+	}
+	r.cur = h
+	if err := r.materializeStreams(h); err != nil {
+		return err
+	}
+	if r.sparse {
+		r.finishSparse(h)
+	}
+	// Volume and directory entries never carry readable content. Once their
+	// metadata streams have been materialized, advance to the next block
+	// boundary so the reader is positioned cleanly for the following entry.
+	if !r.inData && !r.sparse {
+		r.entryDone = true
+		return r.scanNext()
+	}
+	r.entryDone = false
+	return nil
+}
+
 // finishEntry consumes any remaining data and trailing streams of the current
-// file entry and advances to the next block boundary.
+// entry and advances to the next block boundary.
 func (r *Reader) finishEntry() error {
 	defer func() { r.entryDone = true }()
 
-	if r.streamModeActive {
-		// Stream-enumeration mode: walk the remaining streams to the end of the
-		// object. streamNext skips each stream's unread bytes itself.
-		for !r.lastStream && r.streamType != StreamSPAD {
-			if err := r.streamNext(); err != nil {
-				return err
-			}
-		}
+	if r.sparse {
+		// Sparse content was fully materialized during Next; just advance.
+		r.sparse = false
 		return r.scanNext()
 	}
 
@@ -600,37 +624,35 @@ func (r *Reader) skipRemainingData() error {
 	return nil
 }
 
-// Read reads data from the current entry into p. The selection depends on the
-// reader mode:
+// Read reads data from the current file entry into p. It returns the
+// reconstructed file content: for a plain file this is the standard data
+// (STAN) stream, transparently followed across continuation media; for a
+// sparse file the holes are zero-filled according to the parsed sparse map.
 //
-//   - In the default mode, Read reads the standard data (STAN) stream of the
-//     current file entry, transparently following continuation media, and
-//     returns io.EOF when the stream is exhausted. Calling Read on a
-//     non-file entry returns io.EOF immediately.
+// Decompression and decryption are not performed: for a compressed or
+// encrypted stream the raw stored bytes are returned.
 //
-//   - In stream-enumeration mode (see [Reader.EnumerateStreams]), Read reads
-//     the bytes of the stream most recently returned by [Reader.NextStream].
-//     It returns io.EOF when that stream is exhausted; the entry is not
-//     finished until NextStream reports io.EOF or [Reader.Next] is called.
+// Read returns io.EOF when the entry's content is exhausted. Calling Read on
+// a non-file entry returns io.EOF immediately.
 func (r *Reader) Read(p []byte) (int, error) {
 	if r.cur == nil || r.entryDone {
 		return 0, io.EOF
 	}
+	if r.cur.Type != EntryFile {
+		return 0, io.EOF
+	}
 
-	if r.streamModeActive {
-		if r.streamRemain <= 0 {
-			return 0, io.EOF
-		}
-		nr, err := r.readCurrentStream(p)
-		if r.streamRemain <= 0 && err == nil {
+	if r.sparse {
+		nr, err := r.readSparse(p)
+		if r.sparseIdx >= len(r.cur.SparseExtents) && err == nil {
+			if ferr := r.finishEntry(); ferr != nil {
+				return nr, ferr
+			}
 			err = io.EOF
 		}
 		return nr, err
 	}
 
-	if r.cur.Type != EntryFile {
-		return 0, io.EOF
-	}
 	if !r.inData || r.dataRem <= 0 {
 		if err := r.finishEntry(); err != nil {
 			return 0, err

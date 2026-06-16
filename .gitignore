@@ -1,5 +1,4 @@
-*.test
 /tmp/
-sample.bkf
-out.tar
 *.bkf
+/mtftar
+/cmd/mtftar/mtftar

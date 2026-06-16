@@ -2,6 +2,7 @@ package mtf
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"testing"
 	"time"
@@ -17,6 +18,23 @@ func streamDescriptor(typ uint32, data []byte) []byte {
 	putU64(b, stLengthOff, uint64(len(data)))
 	copy(b[streamHeaderSize:], data)
 	return b
+}
+
+// sparseStanDescriptor emits a STAN stream header carrying the STREAM_IS_SPARSE
+// bit with a length of zero, as specified in MTF section 6.2.1.7.
+func sparseStanDescriptor() []byte {
+	b := streamDescriptor(StreamSTAN, nil)
+	putU16(b, stSysAttrOff, int(StreamFSSparse))
+	return b
+}
+
+// sparDescriptor emits a SPAR stream whose data is an 8-byte sparse frame
+// header (offset) followed by the non-hole byte content.
+func sparDescriptor(offset uint64, data []byte) []byte {
+	payload := make([]byte, 8+len(data))
+	binary.LittleEndian.PutUint64(payload[:8], offset)
+	copy(payload[8:], data)
+	return streamDescriptor(StreamSPAR, payload)
 }
 
 // buildStreams emits a sequence of stream descriptors followed by a terminal
@@ -103,7 +121,16 @@ func nextOfType(r *Reader, want EntryType) *Header {
 	}
 }
 
-func TestNextStreamDirectory(t *testing.T) {
+func readAll(t *testing.T, r *Reader) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil && err != io.EOF {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestMaterializeDirectoryMetadata(t *testing.T) {
 	nacl := []byte{0x01, 0x00, 0x04, 0x80, 0x14, 0x00, 0x00, 0x00}
 	ntoi := []byte{0xAA, 0xBB, 0xCC, 0xDD}
 	dir := buildDirbWithStreams(1, "Users",
@@ -112,39 +139,18 @@ func TestNextStreamDirectory(t *testing.T) {
 	)
 	r := NewReader(bytes.NewReader(streamArchive(dir)))
 	h := nextOfType(r, EntryDirectory)
-	if h.Type != EntryDirectory {
-		t.Fatalf("want directory, got %v", h.Type)
-	}
 
-	var types []string
-	var naclRead bytes.Buffer
-	for {
-		s, err := r.NextStream()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		types = append(types, StreamTypeName(s.Type))
-		if s.Type == StreamNACL {
-			if s.Length != int64(len(nacl)) {
-				t.Fatalf("NACL length = %d, want %d", s.Length, len(nacl))
-			}
-			if _, err := io.Copy(&naclRead, r); err != nil && err != io.EOF {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(naclRead.Bytes(), nacl) {
-				t.Fatalf("NACL stream bytes = % x, want % x", naclRead.Bytes(), nacl)
-			}
-		}
+	if !bytes.Equal(h.SecurityDescriptor, nacl) {
+		t.Fatalf("dir SecurityDescriptor = % x, want % x", h.SecurityDescriptor, nacl)
 	}
-	if len(types) != 2 || types[0] != "NACL" || types[1] != "NTOI" {
-		t.Fatalf("stream types = %v, want [NACL NTOI]", types)
+	// NTOI has no Header field and is not materialized; it is simply skipped.
+	// Read on a directory yields no content.
+	if got := readAll(t, r); len(got) != 0 {
+		t.Fatalf("directory Read = %d bytes, want 0", len(got))
 	}
 }
 
-func TestNextStreamFileEnumerateMode(t *testing.T) {
+func TestMaterializeFileMetadataAndContent(t *testing.T) {
 	ntea := []byte("EA-DATA")
 	content := bytes.Repeat([]byte("X"), 300)
 	file := buildFileWithStreams("doc.txt",
@@ -152,63 +158,24 @@ func TestNextStreamFileEnumerateMode(t *testing.T) {
 		streamDescriptor(StreamSTAN, content),
 	)
 	r := NewReader(bytes.NewReader(streamArchive(file)))
-	r.EnumerateStreams(true)
-	nextOfType(r, EntryFile)
-
-	var types []string
-	var stan bytes.Buffer
-	for {
-		s, err := r.NextStream()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		types = append(types, StreamTypeName(s.Type))
-		if s.Type == StreamSTAN {
-			if s.Length != int64(len(content)) {
-				t.Fatalf("STAN length = %d, want %d", s.Length, len(content))
-			}
-			if n, err := io.Copy(&stan, r); err != nil && err != io.EOF {
-				t.Fatal(err)
-			} else if n != int64(len(content)) {
-				t.Fatalf("STAN read %d bytes, want %d", n, len(content))
-			}
-		}
-	}
-	if len(types) != 2 || types[0] != "NTEA" || types[1] != "STAN" {
-		t.Fatalf("stream types = %v, want [NTEA STAN]", types)
-	}
-	if !bytes.Equal(stan.Bytes(), content) {
-		t.Fatalf("STAN bytes mismatch: got %d bytes, want %d", stan.Len(), len(content))
-	}
-}
-
-func TestNextStreamDefaultModeSTAN(t *testing.T) {
-	content := bytes.Repeat([]byte("Z"), 100)
-	file := buildFileWithStreams("f.txt",
-		streamDescriptor(StreamSTAN, content))
-	r := NewReader(bytes.NewReader(streamArchive(file)))
 	h := nextOfType(r, EntryFile)
+
+	if !bytes.Equal(h.ExtendedAttributes, ntea) {
+		t.Fatalf("ExtendedAttributes = %q, want %q", h.ExtendedAttributes, ntea)
+	}
 	if h.Size != int64(len(content)) {
-		t.Fatalf("default mode Header.Size = %d, want %d", h.Size, len(content))
+		t.Fatalf("Size = %d, want %d", h.Size, len(content))
 	}
-	var got bytes.Buffer
-	if _, err := io.Copy(&got, r); err != nil && err != io.EOF {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got.Bytes(), content) {
-		t.Fatalf("legacy Read mismatch: got %d bytes, want %d", got.Len(), len(content))
+	if got := readAll(t, r); !bytes.Equal(got, content) {
+		t.Fatalf("content mismatch: got %d bytes, want %d", len(got), len(content))
 	}
 }
 
-func TestNextStreamEnumerateThenNextAdvances(t *testing.T) {
+func TestMaterializeAdvancesAcrossEntries(t *testing.T) {
 	content := []byte("ABC")
 	file1 := buildFileWithStreams("a.txt", streamDescriptor(StreamSTAN, content))
 	file2 := buildFileWithStreams("b.txt", streamDescriptor(StreamSTAN, content))
 	r := NewReader(bytes.NewReader(streamArchive(file1, file2)))
-	r.EnumerateStreams(true)
 
 	seen := 0
 	for {
@@ -222,21 +189,49 @@ func TestNextStreamEnumerateThenNextAdvances(t *testing.T) {
 		if h.Type != EntryFile {
 			continue
 		}
-		count := 0
-		for {
-			if _, err := r.NextStream(); err == io.EOF {
-				break
-			} else if err != nil {
-				t.Fatalf("NextStream: %v", err)
-			}
-			count++
+		if h.Size != int64(len(content)) {
+			t.Fatalf("%s: Size = %d, want %d", h.Name, h.Size, len(content))
 		}
-		if count != 1 {
-			t.Fatalf("entry %s: saw %d streams, want 1", h.Name, count)
+		if got := readAll(t, r); !bytes.Equal(got, content) {
+			t.Fatalf("%s: content mismatch", h.Name)
 		}
 		seen++
 	}
 	if seen != 2 {
 		t.Fatalf("saw %d file entries, want 2", seen)
+	}
+}
+
+func TestMaterializeSparseFile(t *testing.T) {
+	// Logical file: [0..3] = "ABCD", [4..7] = hole, [8..11] = "EFGH"
+	block0 := []byte("ABCD")
+	block1 := []byte("EFGH")
+	want := []byte("ABCD\x00\x00\x00\x00EFGH")
+
+	file := buildFileWithStreams("sparse.bin",
+		sparseStanDescriptor(),
+		sparDescriptor(0, block0),
+		sparDescriptor(8, block1),
+	)
+	r := NewReader(bytes.NewReader(streamArchive(file)))
+	h := nextOfType(r, EntryFile)
+
+	if !h.Sparse {
+		t.Fatal("Sparse flag not set")
+	}
+	if len(h.SparseExtents) != 2 {
+		t.Fatalf("SparseExtents len = %d, want 2", len(h.SparseExtents))
+	}
+	if h.SparseExtents[0].Offset != 0 || !bytes.Equal(h.SparseExtents[0].Data, block0) {
+		t.Fatalf("extent 0 = {Off %d, %q}, want {0, %q}", h.SparseExtents[0].Offset, h.SparseExtents[0].Data, block0)
+	}
+	if h.SparseExtents[1].Offset != 8 || !bytes.Equal(h.SparseExtents[1].Data, block1) {
+		t.Fatalf("extent 1 = {Off %d, %q}, want {8, %q}", h.SparseExtents[1].Offset, h.SparseExtents[1].Data, block1)
+	}
+	if h.Size != int64(len(want)) {
+		t.Fatalf("Size = %d, want %d", h.Size, len(want))
+	}
+	if got := readAll(t, r); !bytes.Equal(got, want) {
+		t.Fatalf("sparse content = %q, want %q", got, want)
 	}
 }
