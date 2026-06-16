@@ -25,7 +25,11 @@ type Reader struct {
 	streamLen       int64  // total length of the current stream's data
 	streamDid       int64  // bytes of current stream data consumed so far
 	streamType      uint32 // current stream data type
+	streamSysAttr   uint16 // current stream's file system attributes
 	streamMediaAttr uint16 // current stream's media format attributes
+	streamEncAlgo   uint16 // current stream's data encryption algorithm
+	streamCompAlgo  uint16 // current stream's data compression algorithm
+	streamChecksum  uint16 // current stream's checksum field
 	lastStream      bool   // a SPAD stream has been seen (end of object streams)
 	streamContinued bool   // current data stream is a cross-media continuation
 
@@ -50,6 +54,9 @@ type Reader struct {
 	set  *SetInfo
 
 	sawESET bool
+
+	// eset is the metadata from the most recent end-of-set (ESET) block.
+	eset *ESetInfo
 
 	// corrupt is the corrupt-object count reported by the most recent ESET.
 	corrupt uint32
@@ -97,6 +104,30 @@ func (r *Reader) Position() int64 { return r.abspos }
 // medium supplied via [Reader.SetContinuation] is switched to. It is always 1
 // for non-spanned archives.
 func (r *Reader) MediaSequence() int { return r.mediaSeq + 1 }
+
+// VerifyChecksum reports whether the common-block header (MTF_DB_HDR)
+// checksum of the current block matches the recomputed word-wise XOR over the
+// remaining header fields (MTF spec, "Header Checksum"). This may be used to
+// detect media corruption. It should be called immediately after [Next]
+// returns (before [Read] consumes the entry). It always returns true when the
+// current block buffer is too short to contain a checksum (nothing to verify).
+//
+// Note: some writers emit a zero checksum; such blocks verify as valid only
+// when every other header word is also zero, so a false "invalid" is possible
+// for such archives. Treat the result as advisory.
+func (r *Reader) VerifyChecksum() bool {
+	return checksumValid(r.blk)
+}
+
+// Checksum returns the MTF common-block header checksum field of the current
+// block together with the value recomputed from the remaining header fields.
+// Equal values indicate an intact header.
+func (r *Reader) Checksum() (stored, computed uint16) {
+	if len(r.blk) < dbChecksumOff+2 {
+		return 0, commonChecksum(r.blk)
+	}
+	return u16(r.blk, dbChecksumOff), commonChecksum(r.blk)
+}
 
 // read drains any pending read-ahead (probe bytes) then reads from the
 // underlying stream into p. It returns the number of bytes read and any error.
@@ -299,8 +330,12 @@ func (r *Reader) scanNext() error {
 func (r *Reader) readStreamHeader() {
 	off := int(r.streamOff)
 	r.streamType = u32(r.blk, off+stTypeOff)
+	r.streamSysAttr = u16(r.blk, off+stSysAttrOff)
 	r.streamMediaAttr = u16(r.blk, off+stMediaAttrOff)
 	r.streamLen = int64(u64(r.blk, off+stLengthOff))
+	r.streamEncAlgo = u16(r.blk, off+stEncryptOff)
+	r.streamCompAlgo = u16(r.blk, off+stCompressOff)
+	r.streamChecksum = u16(r.blk, off+stChecksumOff)
 	r.streamDid = 0
 }
 
@@ -453,6 +488,12 @@ func (r *Reader) Next() (*Header, error) {
 				r.inData = true
 				r.dataRem = r.streamLen
 				h.Size = r.streamLen
+				h.CompressionAlgorithm = r.streamCompAlgo
+				h.EncryptionAlgorithm = r.streamEncAlgo
+				h.Compressed = r.streamMediaAttr&StreamMediaCompressed != 0
+				h.Encrypted = r.streamMediaAttr&StreamMediaEncrypted != 0
+				h.Sparse = r.streamSysAttr&StreamFSSparse != 0
+				h.StreamChecksum = r.streamChecksum
 			} else {
 				r.inData = false
 				r.dataRem = 0
@@ -584,11 +625,16 @@ func (r *Reader) parseTape() error {
 		return err
 	}
 	t := &TapeInfo{
-		MFMID:      u32(r.blk, tapeMFMIDOff),
-		Attributes: u32(r.blk, tapeAttrOff),
-		Sequence:   u16(r.blk, tapeSeqOff),
-		FLBSize:    u16(r.blk, tapeFLBSizeOff),
-		CreateTime: decodeDateTime(r.blk, tapeCTimeOff),
+		MFMID:                 u32(r.blk, tapeMFMIDOff),
+		Attributes:            u32(r.blk, tapeAttrOff),
+		Sequence:              u16(r.blk, tapeSeqOff),
+		PasswordAlgorithm:     u16(r.blk, tapeEncryptOff),
+		SoftFilemarkBlockSize: u16(r.blk, tapeSFMSizeOff),
+		CatalogType:           u16(r.blk, tapeCatTypeOff),
+		FLBSize:               u16(r.blk, tapeFLBSizeOff),
+		SoftwareVendorID:      u16(r.blk, tapeVendorIDOff),
+		MTFMajorVersion:       u8(r.blk, tapeVersionOff),
+		CreateTime:            decodeDateTime(r.blk, tapeCTimeOff),
 	}
 	var err error
 	if sz, po := tapepos(r.blk, tapeSoftwareOff); sz > 0 {
@@ -606,6 +652,11 @@ func (r *Reader) parseTape() error {
 			return err
 		}
 	}
+	if sz, po := tapepos(r.blk, tapePasswdOff); sz > 0 {
+		if t.Password, err = r.stringAt(sz, po, '/'); err != nil {
+			return err
+		}
+	}
 	r.tape = t
 	return nil
 }
@@ -615,14 +666,17 @@ func (r *Reader) parseSet() error {
 		return err
 	}
 	s := &SetInfo{
-		Number:       u16(r.blk, ssetNumOff),
-		Attributes:   u32(r.blk, ssetAttrOff),
-		Compression:  u16(r.blk, ssetCompOff),
-		Encryption:   u16(r.blk, ssetEncryptOff),
-		MajorVersion: u8(r.blk, ssetMajorOff),
-		MinorVersion: u8(r.blk, ssetMinorOff),
-		TimeZone:     int8(u8(r.blk, ssetTZOff)),
-		CreateTime:   decodeDateTime(r.blk, ssetCTimeOff),
+		Number:           u16(r.blk, ssetNumOff),
+		PBA:              u64(r.blk, ssetPBAOff),
+		SoftwareVendorID: u16(r.blk, ssetVendorOff),
+		SoftwareVersion:  u16(r.blk, ssetVerOff),
+		Attributes:       u32(r.blk, ssetAttrOff),
+		Compression:      u16(r.blk, ssetCompOff),
+		Encryption:       u16(r.blk, ssetEncryptOff),
+		MajorVersion:     u8(r.blk, ssetMajorOff),
+		MinorVersion:     u8(r.blk, ssetMinorOff),
+		TimeZone:         int8(u8(r.blk, ssetTZOff)),
+		CreateTime:       decodeDateTime(r.blk, ssetCTimeOff),
 	}
 	var err error
 	if sz, po := tapepos(r.blk, ssetNameOff); sz > 0 {
@@ -632,6 +686,11 @@ func (r *Reader) parseSet() error {
 	}
 	if sz, po := tapepos(r.blk, ssetLabelOff); sz > 0 {
 		if s.Label, err = r.stringAt(sz, po, '/'); err != nil {
+			return err
+		}
+	}
+	if sz, po := tapepos(r.blk, ssetPasswdOff); sz > 0 {
+		if s.Password, err = r.stringAt(sz, po, '/'); err != nil {
 			return err
 		}
 	}
@@ -660,13 +719,26 @@ func (r *Reader) parseVolb() (*Header, error) {
 	r.cwdID = 0
 
 	h := &Header{
-		Type:       EntryVolume,
-		Name:       device,
-		Volume:     device,
-		Attributes: u32(r.blk, volbAttrOff),
-		OSID:       u8(r.blk, dbOSIDOff),
-		CreateTime: decodeDateTime(r.blk, volbCTimeOff),
-		ModTime:    decodeDateTime(r.blk, volbCTimeOff),
+		Type:            EntryVolume,
+		Name:            device,
+		Volume:          device,
+		Attributes:      u32(r.blk, volbAttrOff),
+		BlockAttributes: u32(r.blk, dbAttrOff),
+		OSID:            u8(r.blk, dbOSIDOff),
+		DisplayableSize: u64(r.blk, dbSizeOff),
+		CreateTime:      decodeDateTime(r.blk, volbCTimeOff),
+		ModTime:         decodeDateTime(r.blk, volbCTimeOff),
+	}
+	var err error
+	if sz, po := tapepos(r.blk, volbVolumeOff); sz > 0 {
+		if h.VolumeLabel, err = r.stringAt(sz, po, '/'); err != nil {
+			return nil, err
+		}
+	}
+	if sz, po := tapepos(r.blk, volbMachineOff); sz > 0 {
+		if h.MachineName, err = r.stringAt(sz, po, '/'); err != nil {
+			return nil, err
+		}
 	}
 	if r.set != nil {
 		h.SetNumber = r.set.Number
@@ -692,15 +764,18 @@ func (r *Reader) parseDirb() (*Header, error) {
 	// else: path encoded in a stream; keep the previous cwd.
 
 	h := &Header{
-		Type:       EntryDirectory,
-		Name:       joinPath(r.volume, r.cwd),
-		Volume:     r.volume,
-		Attributes: attr,
-		OSID:       u8(r.blk, dbOSIDOff),
-		ModTime:    decodeDateTime(r.blk, dirbMTimeOff),
-		CreateTime: decodeDateTime(r.blk, dirbCTimeOff),
-		AccessTime: decodeDateTime(r.blk, dirbATimeOff),
-		DirID:      r.cwdID,
+		Type:            EntryDirectory,
+		Name:            joinPath(r.volume, r.cwd),
+		Volume:          r.volume,
+		Attributes:      attr,
+		BlockAttributes: u32(r.blk, dbAttrOff),
+		OSID:            u8(r.blk, dbOSIDOff),
+		DisplayableSize: u64(r.blk, dbSizeOff),
+		ModTime:         decodeDateTime(r.blk, dirbMTimeOff),
+		CreateTime:      decodeDateTime(r.blk, dirbCTimeOff),
+		BirthTime:       decodeDateTime(r.blk, dirbBTimeOff),
+		AccessTime:      decodeDateTime(r.blk, dirbATimeOff),
+		DirID:           r.cwdID,
 	}
 	if r.set != nil {
 		h.SetNumber = r.set.Number
@@ -713,6 +788,13 @@ func (r *Reader) parseEset() error {
 		return err
 	}
 	r.corrupt = u32(r.blk, esetCorruptOff)
+	r.eset = &ESetInfo{
+		Attributes:       u32(r.blk, esetAttrOff),
+		CorruptObjects:   r.corrupt,
+		FDDMediaSequence: u16(r.blk, esetSeqOff),
+		SetNumber:        u16(r.blk, esetSetOff),
+		CreateTime:       decodeDateTime(r.blk, esetCTimeOff),
+	}
 	return nil
 }
 
@@ -758,6 +840,11 @@ func (r *Reader) restoreDirb() (*Header, error) {
 // end-of-data-set (ESET) block, or zero if no set has ended yet.
 func (r *Reader) CorruptObjects() uint32 { return r.corrupt }
 
+// ESet returns metadata from the most recent end-of-data-set (ESET) block, or
+// nil if no data set has ended yet. The returned value is shared; callers must
+// not retain it across subsequent calls to [Reader.Next].
+func (r *Reader) ESet() *ESetInfo { return r.eset }
+
 func (r *Reader) parseFile() (*Header, error) {
 	if err := r.ensure(fileNameOff + 4); err != nil {
 		return nil, err
@@ -772,16 +859,19 @@ func (r *Reader) parseFile() (*Header, error) {
 	dirid := u32(r.blk, fileDirIDOff)
 
 	h := &Header{
-		Type:       EntryFile,
-		Name:       joinPath(r.volume, r.cwd, name),
-		Volume:     r.volume,
-		Attributes: u32(r.blk, fileAttrOff),
-		OSID:       u8(r.blk, dbOSIDOff),
-		ModTime:    decodeDateTime(r.blk, fileMTimeOff),
-		CreateTime: decodeDateTime(r.blk, fileCTimeOff),
-		AccessTime: decodeDateTime(r.blk, fileATimeOff),
-		FileID:     u32(r.blk, fileIDOff),
-		DirID:      dirid,
+		Type:            EntryFile,
+		Name:            joinPath(r.volume, r.cwd, name),
+		Volume:          r.volume,
+		Attributes:      u32(r.blk, fileAttrOff),
+		BlockAttributes: u32(r.blk, dbAttrOff),
+		OSID:            u8(r.blk, dbOSIDOff),
+		DisplayableSize: u64(r.blk, dbSizeOff),
+		ModTime:         decodeDateTime(r.blk, fileMTimeOff),
+		CreateTime:      decodeDateTime(r.blk, fileCTimeOff),
+		BirthTime:       decodeDateTime(r.blk, fileBTimeOff),
+		AccessTime:      decodeDateTime(r.blk, fileATimeOff),
+		FileID:          u32(r.blk, fileIDOff),
+		DirID:           dirid,
 	}
 	if r.set != nil {
 		h.SetNumber = r.set.Number

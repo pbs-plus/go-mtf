@@ -97,9 +97,9 @@ const (
 const (
 	esetAttrOff    = 52
 	esetCorruptOff = 56
-	esetSeqOff     = 76
-	esetSetOff     = 78
-	esetCTimeOff   = 80
+	esetSeqOff     = 76 // FDD media sequence number
+	esetSetOff     = 78 // data set number
+	esetCTimeOff   = 80 // media write date
 )
 
 // Stream header field offsets (relative to the start of the stream header).
@@ -135,3 +135,28 @@ func tapepos(b []byte, off int) (size, pos uint16) {
 }
 
 func blockType(b []byte) [4]byte { return [4]byte{b[0], b[1], b[2], b[3]} }
+
+// commonChecksum returns the MTF common-block header checksum for the given
+// block: a 16-bit word-wise XOR over all MTF_DB_HDR fields except the checksum
+// field itself (bytes 0..45, i.e. 23 little-endian words). See MTF spec,
+// "Header Checksum".
+func commonChecksum(b []byte) uint16 {
+	if len(b) < dbChecksumOff {
+		return 0
+	}
+	var sum uint16
+	for off := 0; off+1 < dbChecksumOff; off += 2 {
+		sum ^= u16(b, off)
+	}
+	return sum
+}
+
+// checksumValid reports whether the MTF_DB_HDR checksum field of b matches the
+// computed word-wise XOR over the remaining header fields. It returns true if
+// the block buffer is too short to contain a checksum (nothing to verify).
+func checksumValid(b []byte) bool {
+	if len(b) < dbChecksumOff+2 {
+		return true
+	}
+	return commonChecksum(b) == u16(b, dbChecksumOff)
+}

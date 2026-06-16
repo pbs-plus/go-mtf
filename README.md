@@ -50,7 +50,33 @@ for {
 | `mtf.EntryFile`   | A regular file (`FILE`); data via `Reader.Read`. |
 
 `Reader.Tape()` and `Reader.Set()` expose metadata from the `TAPE` and `SSET`
-descriptor blocks respectively.
+descriptor blocks respectively. `Reader.ESet()` exposes the most recent
+end-of-set (`ESET`) metadata (corrupt-object count, data-set number, write
+date) after a data set has ended.
+
+### Entry & block metadata
+
+`Header` carries the full descriptor detail per entry: modification/access/
+creation/**birth** times, type-specific `Attributes`, the source `Volume`, the
+volume **label** and **machine name** (volume entries), the MTF object IDs, and
+the **Displayable Size** from the common descriptor block. For file entries it
+also reports the standard data stream's properties:
+
+- `CompressionAlgorithm` / `EncryptionAlgorithm` — registered algorithm IDs,
+- `Compressed` / `Encrypted` / `Sparse` — decoded stream flags,
+- `StreamChecksum` — the stream header checksum field.
+
+> **Note:** compression, encryption and sparse expansion are *not* performed by
+> the library — these fields let a caller detect streams that need external
+> decoding. Raw stream bytes are delivered as stored.
+
+### Checksum verification
+
+`Reader.VerifyChecksum()` validates the MTF common-block header (`MTF_DB_HDR`)
+checksum (16-bit word-wise XOR over the header, per the spec) of the current
+block, for advisory corruption detection. `Reader.Checksum()` returns both the
+stored and recomputed values. Some writers emit a zero checksum, so treat the
+result as advisory.
 
 ### Spanning multiple media
 

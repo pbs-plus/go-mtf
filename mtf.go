@@ -57,18 +57,56 @@ type Header struct {
 	AccessTime time.Time
 	// CreateTime is the creation time, if recorded.
 	CreateTime time.Time
-	// Attributes is the block's type-specific attribute flags.
+	// BirthTime is the birth time of the entry, if recorded. Only emitted by
+	// NT-based backups that populate the MTF birth-time field.
+	BirthTime time.Time
+	// Attributes is the block's type-specific attribute flags (the DBLK
+	// attributes field that follows the common header).
 	Attributes uint32
+	// BlockAttributes is the MTF_DB_HDR common Block Attributes field, which
+	// carries bits such as MTF_CONTINUATION and MTF_COMPRESSION. Use the
+	// Attr* constants to test it.
+	BlockAttributes uint32
 	// OSID is the operating system identifier recorded in the block.
 	OSID uint8
 	// SetNumber is the backup data-set number this entry belongs to.
 	SetNumber uint16
 	// Volume is the name of the source volume/device the entry resides on.
 	Volume string
+	// VolumeLabel is the source volume's label, if recorded (volume entries).
+	VolumeLabel string
+	// MachineName is the name of the source machine, if recorded (volume
+	// entries).
+	MachineName string
 	// FileID is the MTF object identifier of the file (files only).
 	FileID uint32
 	// DirID is the identifier of the directory containing the entry.
 	DirID uint32
+
+	// The following describe the file's standard (STAN) data stream and are
+	// meaningful for file entries.
+	//
+	// CompressionAlgorithm is the registered ID of the algorithm used to
+	// compress the standard data stream, or zero if uncompressed. A non-zero
+	// value indicates [Header.Compressed] is set.
+	CompressionAlgorithm uint16
+	// EncryptionAlgorithm is the registered ID of the algorithm used to
+	// encrypt the standard data stream, or zero if unencrypted.
+	EncryptionAlgorithm uint16
+	// Compressed reports whether the standard data stream is compressed.
+	Compressed bool
+	// Encrypted reports whether the standard data stream is encrypted.
+	Encrypted bool
+	// Sparse reports whether the standard data stream is sparse
+	// (STREAM_IS_SPARSE). Sparse data is not transparently expanded.
+	Sparse bool
+	// StreamChecksum is the checksum field of the standard (STAN) data stream
+	// header (zero unless the stream is checksummed).
+	StreamChecksum uint16
+	// DisplayableSize is the object size recorded in the common descriptor
+	// block's Displayable Size field. For uncompressed files it equals Size;
+	// for compressed or sparse objects it reflects the logical (expanded) size.
+	DisplayableSize uint64
 }
 
 // TapeInfo holds metadata from the MTF TAPE descriptor block.
@@ -76,26 +114,58 @@ type TapeInfo struct {
 	Software   string // generator software string
 	Name       string // tape name
 	Label      string // tape label
-	MFMID      uint32
-	Attributes uint32
-	Sequence   uint16
+	Password   string // media password, if recorded
+	MFMID      uint32 // media family id
+	Attributes uint32 // TAPE attributes
+	Sequence   uint16 // media sequence number within the media family
 	FLBSize    uint16 // logical block size used by the archive
-	CreateTime time.Time
+	// PasswordAlgorithm is the registered ID of the password-encryption
+	// algorithm used to protect the media password, or zero.
+	PasswordAlgorithm uint16
+	// SoftFilemarkBlockSize is the soft filemark (SFMB) block size in units of
+	// 512 bytes; only meaningful when soft filemarks are used.
+	SoftFilemarkBlockSize uint16
+	// CatalogType is the Media Based Catalog format type recorded on the tape.
+	CatalogType uint16
+	// SoftwareVendorID is the registered vendor ID of the writing software.
+	SoftwareVendorID uint16
+	// MTFMajorVersion is the MTF major revision recorded in the TAPE block.
+	MTFMajorVersion uint8
+	CreateTime      time.Time
 }
 
 // SetInfo holds metadata from the MTF start-of-data-set (SSET) block.
 type SetInfo struct {
-	Name         string // set name
-	Label        string // set label
-	Owner        string // set owner/user
-	Number       uint16 // data-set number
-	Attributes   uint32
-	Compression  uint16
-	Encryption   uint16
-	MajorVersion uint8
-	MinorVersion uint8
-	TimeZone     int8
-	CreateTime   time.Time
+	Name   string // set name
+	Label  string // set label
+	Owner  string // set owner/user
+	Number uint16 // data-set number
+	// Password is the data-set password, if recorded.
+	Password string
+	// PBA is the physical block address of the SSET block, used for seek
+	// indexing in conjunction with a Media Based Catalog.
+	PBA uint64
+	// SoftwareVendorID is the registered vendor ID of the writing software.
+	SoftwareVendorID uint16
+	// SoftwareVersion is the writer's software version number.
+	SoftwareVersion uint16
+	Attributes      uint32
+	Compression     uint16
+	Encryption      uint16
+	MajorVersion    uint8
+	MinorVersion    uint8
+	TimeZone        int8
+	CreateTime      time.Time
+}
+
+// ESetInfo holds metadata from the most recent end-of-data-set (ESET) block.
+// It is available via [Reader.ESet] after a data set has ended.
+type ESetInfo struct {
+	Attributes       uint32 // ESET block attributes
+	CorruptObjects   uint32 // number of corrupt files in the data set
+	FDDMediaSequence uint16 // FDD media sequence number
+	SetNumber        uint16 // data-set number being closed
+	CreateTime       time.Time
 }
 
 // Block descriptor types (the first four bytes of a common descriptor block).
@@ -125,14 +195,26 @@ const (
 	AttrEOSAtEOM uint32 = 0x00000004
 )
 
-// Stream Media Format Attributes (MTF_STREAM_HDR Stream Media Format Attributes
-// field, stream header offset 6).
+// Stream File System Attributes (MTF_STREAM_HDR Stream File System
+// Attributes field, stream header offset 4).
+const (
+	// StreamFSSparse (STREAM_IS_SPARSE, BIT3) marks a stream whose data is
+	// sparse. See MTF spec section 6.1.
+	StreamFSSparse uint16 = 0x0008
+)
+
+// Stream Media Format Attributes (MTF_STREAM_HDR Stream Media Format
+// Attributes field, stream header offset 6).
 const (
 	// StreamMediaContinue (STREAM_CONTINUE, BIT0) marks a stream whose data is a
 	// continuation of a stream split across media at EOM. Its Stream Length holds
 	// only the remaining (unwritten) portion and its data begins at the next
 	// Format Logical Block boundary. See MTF spec section 6.1.
 	StreamMediaContinue uint16 = 0x0001
+	// StreamMediaEncrypted (STREAM_ENCRYPTED, BIT3) marks an encrypted stream.
+	StreamMediaEncrypted uint16 = 0x0008
+	// StreamMediaCompressed (STREAM_COMPRESSED, BIT4) marks a compressed stream.
+	StreamMediaCompressed uint16 = 0x0010
 )
 
 // Stream data type identifiers. These are the four-byte stream type codes read

@@ -147,8 +147,9 @@ func buildFILE(id, dirid uint32, name string, mtime time.Time, content []byte) [
 func buildESET() []byte {
 	b := newBlock()
 	writeCommon(b, dbESET, 0)
-	// sequence = 1
-	b[esetSeqOff], b[esetSeqOff+1] = 1, 0
+	// FDD media sequence number = 1, data set number = 1.
+	putU16(b, esetSeqOff, 1)
+	putU16(b, esetSetOff, 1)
 	return b
 }
 
