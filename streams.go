@@ -23,18 +23,27 @@ func (r *Reader) materializeStreams(h *Header) error {
 			r.lastStream = true
 			return nil
 		case StreamNACL:
+			if r.headerOnly {
+				break
+			}
 			b, err := r.readStreamBytes(r.streamLen)
 			if err != nil {
 				return err
 			}
 			h.SecurityDescriptor = b
 		case StreamNTEA:
+			if r.headerOnly {
+				break
+			}
 			b, err := r.readStreamBytes(r.streamLen)
 			if err != nil {
 				return err
 			}
 			h.ExtendedAttributes = b
 		case StreamSPAR:
+			if r.headerOnly {
+				break
+			}
 			b, err := r.readStreamBytes(r.streamLen)
 			if err != nil {
 				return err

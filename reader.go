@@ -12,6 +12,7 @@ import (
 // of the current file entry. The API intentionally mirrors archive/tar.
 type Reader struct {
 	r      io.Reader
+	seeker io.Seeker // non-nil when the source supports seeking; skipStreamData seeks
 	closer io.Closer
 
 	blk     []byte // header / stream-header buffer for the current block
@@ -51,6 +52,13 @@ type Reader struct {
 	mediaSeq  int                       // number of continuation media consumed
 	peek      []byte                    // read-ahead bytes pending delivery (probe buffer)
 
+	// headerOnly skips the *data* of metadata streams (NACL/NTEA/SPAR) instead of
+	// reading them into the Header, and leaves STAN content undelivered. Set by
+	// [Reader.HeaderOnly]; used by [Reader.Census] for cheap, allocation-light
+	// cartridge classification. Stream headers are still parsed, so flags such
+	// as Compressed/Encrypted/Sparse remain accurate.
+	headerOnly bool
+
 	tape *TapeInfo
 	set  *SetInfo
 
@@ -78,10 +86,26 @@ func Open(name string) (*Reader, error) {
 	return NewReader(f), nil
 }
 
-// NewReader returns a new Reader reading from r.
+// NewReader returns a new Reader reading from r. When r implements io.Seeker
+// (for example an *os.File), the reader skips data streams by seeking rather
+// than reading, which is dramatically faster when only block headers are
+// needed (listing, cataloging) on large archives.
 func NewReader(r io.Reader) *Reader {
-	return &Reader{r: r}
+	rd := &Reader{r: r}
+	if s, ok := r.(io.Seeker); ok {
+		rd.seeker = s
+	}
+	return rd
 }
+
+// HeaderOnly puts the reader into header-only mode: metadata stream *data*
+// (NTFS security descriptors, extended attributes, sparse maps) is skipped
+// rather than read into [Header] fields, and standard (STAN) file content is
+// never delivered. Block and stream *headers* are still parsed, so entry names,
+// sizes and flags remain accurate. Combined with a seekable source this lets a
+// caller walk a cartridge reading essentially only headers, minimizing both
+// I/O and allocations. It is used by [Reader.Census].
+func (r *Reader) HeaderOnly() { r.headerOnly = true }
 
 // Close closes the underlying reader if it was opened by Open.
 func (r *Reader) Close() error {
@@ -210,8 +234,23 @@ func (r *Reader) wrapFlbread() {
 
 // skipStreamData discards n bytes of stream data. Stream data flows
 // continuously across logical block boundaries, so (unlike block alignment)
-// it is not capped to flbsize.
+// it is not capped to flbsize. When the source is seekable the skip is done
+// with a single Seek rather than reading the bytes, which makes header-only
+// walks (listing, Census) fast on large file-backed archives.
 func (r *Reader) skipStreamData(n int64) error {
+	if r.seeker != nil {
+		target := r.abspos + n
+		if _, err := r.seeker.Seek(target, io.SeekStart); err != nil {
+			return err
+		}
+		// Discard read-ahead: those bytes were read from the pre-seek position.
+		r.peek = r.peek[:0]
+		r.flbread += uint32(n)
+		r.abspos = target
+		r.streamDid += n
+		r.wrapFlbread()
+		return nil
+	}
 	for n > 0 {
 		chunk := min(n, int64(len(r.scratch)))
 		nr, err := r.readFull(r.scratch[:chunk])

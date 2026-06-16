@@ -2,6 +2,7 @@ package mtf
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -366,6 +367,84 @@ func TestReadChunked(t *testing.T) {
 	}
 	if !bytes.Equal(got.Bytes(), content) {
 		t.Errorf("large file content mismatch (got %d bytes, want %d)", got.Len(), len(content))
+	}
+}
+
+// nonSeeker wraps a byte slice behind a reader that does NOT implement
+// io.Seeker, forcing the skipStreamData read-fallback path.
+type nonSeeker struct {
+	data []byte
+	off  int
+}
+
+func (n *nonSeeker) Read(p []byte) (int, error) {
+	if n.off >= len(n.data) {
+		return 0, io.EOF
+	}
+	c := copy(p, n.data[n.off:])
+	n.off += c
+	return c, nil
+}
+
+// TestSeekAndNonSeekPathsEqual extracts every file twice — once from a
+// seekable source (bytes.Reader) and once from a non-seekable source — and
+// asserts the content and per-file sizes are identical. This guards the seek
+// optimization against diverging from the read-based skip path.
+func TestSeekAndNonSeekPathsEqual(t *testing.T) {
+	contents := [][]byte{
+		bytes.Repeat([]byte("ABCDEFGH"), 64), // spans blocks
+		[]byte("small"),
+		{}, // empty file
+		bytes.Repeat([]byte{0x00}, 700),
+	}
+	var buf bytes.Buffer
+	buf.Write(buildTape())
+	buf.Write(buildSSET())
+	buf.Write(buildVOLB("E:"))
+	buf.Write(buildDIRB(1, "root", time.Date(2021, 5, 5, 5, 5, 5, 0, time.Local)))
+	for i, c := range contents {
+		buf.Write(buildFILE(uint32(10+i), 1, fmt.Sprintf("f%d.bin", i),
+			time.Date(2021, 5, 5, 5, 5, 5, 0, time.Local), c))
+	}
+	buf.Write(buildESET())
+	data := buf.Bytes()
+
+	extract := func(src io.Reader) (map[string][]byte, error) {
+		r := NewReader(src)
+		out := make(map[string][]byte)
+		for {
+			blk, err := r.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			if blk.Kind != KindEntry || blk.Header.Type != EntryFile {
+				continue
+			}
+			var b bytes.Buffer
+			if _, err := io.Copy(&b, r); err != nil {
+				return nil, err
+			}
+			out[blk.Header.Name] = b.Bytes()
+		}
+		return out, nil
+	}
+
+	seekOut, err := extract(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("seek path: %v", err)
+	}
+	nonSeekOut, err := extract(&nonSeeker{data: data})
+	if err != nil {
+		t.Fatalf("non-seek path: %v", err)
+	}
+	for name, want := range seekOut {
+		got := nonSeekOut[name]
+		if !bytes.Equal(got, want) {
+			t.Errorf("%s: non-seek path differs (got %d bytes, want %d)", name, len(got), len(want))
+		}
 	}
 }
 

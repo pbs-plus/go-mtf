@@ -94,6 +94,14 @@ func (r *Reader) switchMedium() bool {
 	// Discard any pending read-ahead belonging to the previous medium.
 	r.peek = r.peek[:0]
 	r.r = nr
+	r.abspos = 0 // new medium starts at its own offset 0
+	// Re-bind seeking to the new medium, if it supports it; otherwise disable
+	// seeking so data skips fall back to reading.
+	if s, ok := nr.(io.Seeker); ok {
+		r.seeker = s
+	} else {
+		r.seeker = nil
+	}
 	r.flbsize = 0 // re-discovered from the continuation TAPE block
 	r.mediaSeq++
 	return true
