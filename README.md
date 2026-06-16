@@ -70,6 +70,44 @@ also reports the standard data stream's properties:
 > the library — these fields let a caller detect streams that need external
 > decoding. Raw stream bytes are delivered as stored.
 
+### Stream enumeration
+
+By default `Reader.Next()` positions file entries at their standard data
+stream (STAN) and `Reader.Read()` returns its bytes, skipping any metadata
+streams that precede it. Directory and volume entries expose their streams
+through the iterator below.
+
+For full metadata access — including streams that precede a file's STAN, such
+as NTFS security descriptors (NACL), extended attributes (NTEA), object IDs
+(NTOI) and sparse maps (SPAR) — call `Reader.EnumerateStreams(true)` *before*
+the first `Next`, then enumerate each entry's streams with `NextStream`:
+
+```go
+r.EnumerateStreams(true)
+for {
+	h, err := r.Next()
+	if err == io.EOF { break }
+	for {
+		s, err := r.NextStream()
+		if err == io.EOF { break }
+		switch s.Type {
+		case mtf.StreamNACL: // NTFS security descriptor
+			sd := make([]byte, s.Length)
+			io.ReadFull(r, sd)
+		case mtf.StreamSTAN: // file content
+			io.Copy(out, r)
+		}
+	}
+}
+```
+
+`NextStream` returns a `*Stream` describing the type, length, compression/
+encryption algorithm IDs, attribute flags and checksum. `Reader.Read()` then
+yields the bytes of that stream; for a file whose STAN spans continuation
+media, the spanning is followed transparently. In enumerate mode
+`Header.Size` and the stream-derived flags are **not** populated by `Next` —
+read them from the STAN `Stream` instead.
+
 ### Checksum verification
 
 `Reader.VerifyChecksum()` validates the MTF common-block header (`MTF_DB_HDR`)

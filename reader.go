@@ -32,6 +32,11 @@ type Reader struct {
 	lastStream      bool   // a SPAD stream has been seen (end of object streams)
 	streamContinued bool   // current data stream is a cross-media continuation
 
+	streamMode       bool  // EnumerateStreams: expose all streams, no auto-seek to STAN
+	streamModeActive bool  // NextStream has been used on the current entry
+	streamPrimed     bool  // first stream after Next is loaded but not yet returned
+	streamRemain     int64 // unread bytes of the currently selected stream
+
 	cur       *Header
 	inData    bool  // positioned within the file's STAN data stream
 	dataRem   int64 // remaining bytes of the file's STAN data
@@ -382,6 +387,9 @@ func (r *Reader) Next() (*Header, error) {
 		}
 	}
 	r.inData = false
+	r.streamModeActive = false
+	r.streamPrimed = false
+
 	r.dataRem = 0
 
 	for {
@@ -434,11 +442,12 @@ func (r *Reader) Next() (*Header, error) {
 				if err != nil {
 					return nil, err
 				}
-				if err := r.scanNext(); err != nil {
+				has, err := r.startEntryStreams()
+				if err != nil {
 					return r.endOrError(err)
 				}
 				r.cur = h
-				r.entryDone = true
+				r.entryDone = !has
 				return h, nil
 			}
 		case dbDIRB:
@@ -452,11 +461,12 @@ func (r *Reader) Next() (*Header, error) {
 				if err != nil {
 					return nil, err
 				}
-				if err := r.scanNext(); err != nil {
+				has, err := r.startEntryStreams()
+				if err != nil {
 					return r.endOrError(err)
 				}
 				r.cur = h
-				r.entryDone = true
+				r.entryDone = !has
 				return h, nil
 			}
 
@@ -468,6 +478,12 @@ func (r *Reader) Next() (*Header, error) {
 			if err := r.streamStart(); err != nil {
 				return nil, err
 			}
+			r.cur = h
+			r.entryDone = false
+			if r.streamMode {
+				// Expose the full stream sequence; do not pre-seek to STAN.
+				return h, nil
+			}
 			for r.streamType != StreamSTAN &&
 				r.streamType != StreamSPAD &&
 				!r.lastStream {
@@ -475,8 +491,6 @@ func (r *Reader) Next() (*Header, error) {
 					return nil, err
 				}
 			}
-			r.cur = h
-			r.entryDone = false
 			if r.streamType == StreamSTAN {
 				r.inData = true
 				r.dataRem = r.streamLen
@@ -517,6 +531,17 @@ func (r *Reader) endOrError(err error) (*Header, error) {
 // file entry and advances to the next block boundary.
 func (r *Reader) finishEntry() error {
 	defer func() { r.entryDone = true }()
+
+	if r.streamModeActive {
+		// Stream-enumeration mode: walk the remaining streams to the end of the
+		// object. streamNext skips each stream's unread bytes itself.
+		for !r.lastStream && r.streamType != StreamSPAD {
+			if err := r.streamNext(); err != nil {
+				return err
+			}
+		}
+		return r.scanNext()
+	}
 
 	if r.inData && r.dataRem > 0 {
 		// Skip the remaining STAN data. This must be media-spanning aware: a
@@ -575,10 +600,35 @@ func (r *Reader) skipRemainingData() error {
 	return nil
 }
 
-// Read reads the standard (STAN) data of the current file entry into p. It
-// returns io.EOF when the entry's data is exhausted.
+// Read reads data from the current entry into p. The selection depends on the
+// reader mode:
+//
+//   - In the default mode, Read reads the standard data (STAN) stream of the
+//     current file entry, transparently following continuation media, and
+//     returns io.EOF when the stream is exhausted. Calling Read on a
+//     non-file entry returns io.EOF immediately.
+//
+//   - In stream-enumeration mode (see [Reader.EnumerateStreams]), Read reads
+//     the bytes of the stream most recently returned by [Reader.NextStream].
+//     It returns io.EOF when that stream is exhausted; the entry is not
+//     finished until NextStream reports io.EOF or [Reader.Next] is called.
 func (r *Reader) Read(p []byte) (int, error) {
-	if r.cur == nil || r.cur.Type != EntryFile || r.entryDone {
+	if r.cur == nil || r.entryDone {
+		return 0, io.EOF
+	}
+
+	if r.streamModeActive {
+		if r.streamRemain <= 0 {
+			return 0, io.EOF
+		}
+		nr, err := r.readCurrentStream(p)
+		if r.streamRemain <= 0 && err == nil {
+			err = io.EOF
+		}
+		return nr, err
+	}
+
+	if r.cur.Type != EntryFile {
 		return 0, io.EOF
 	}
 	if !r.inData || r.dataRem <= 0 {
