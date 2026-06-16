@@ -52,6 +52,33 @@ for {
 `Reader.Tape()` and `Reader.Set()` expose metadata from the `TAPE` and `SSET`
 descriptor blocks respectively.
 
+### Spanning multiple media
+
+A backup data set may be split across several physical media (tapes or `.bkf`
+files) — an *End Of Tape Marker* (`EOTM`) marks the end of each medium. Register
+a continuation callback with `Reader.SetContinuation` to feed the next medium
+when the current one is exhausted. Spanning is handled transparently whether
+the split falls between entries or in the middle of a file's data stream (the
+file is reassembled across the media boundary):
+
+```go
+files := []string{"backup-1.bkf", "backup-2.bkf", "backup-3.bkf"}
+f, err := os.Open(files[0])
+// ...
+r := mtf.NewReader(f)
+i := 0
+r.SetContinuation(func() (io.Reader, error) {
+    i++
+    if i >= len(files) {
+        return nil, io.EOF // no more media
+    }
+    return os.Open(files[i])
+})
+```
+
+`Reader.MediaSequence()` reports the 1-based index of the current medium. If no
+continuation is registered, an `EOTM` simply ends the archive (`io.EOF`).
+
 ### Notes / limitations
 
 - MTF is a **sequential** format: call `Next` to advance and `Read` to consume

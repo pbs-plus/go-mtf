@@ -21,11 +21,13 @@ type Reader struct {
 	strType uint8  // string encoding for the current block
 
 	// current stream descriptor state
-	streamOff  uint32 // offset of the current stream header within blk
-	streamLen  int64  // total length of the current stream's data
-	streamDid  int64  // bytes of current stream data consumed so far
-	streamType uint32 // current stream data type
-	lastStream bool   // a SPAD stream has been seen (end of object streams)
+	streamOff       uint32 // offset of the current stream header within blk
+	streamLen       int64  // total length of the current stream's data
+	streamDid       int64  // bytes of current stream data consumed so far
+	streamType      uint32 // current stream data type
+	streamMediaAttr uint16 // current stream's media format attributes
+	lastStream      bool   // a SPAD stream has been seen (end of object streams)
+	streamContinued bool   // current data stream is a cross-media continuation
 
 	// current entry state
 	cur       *Header
@@ -37,6 +39,11 @@ type Reader struct {
 	volume string
 	cwd    string
 	cwdID  uint32
+
+	// media spanning (EOTM / continuation) support
+	nextMedia func() (io.Reader, error) // supplies the next physical medium
+	mediaSeq  int                       // number of continuation media consumed
+	peek      []byte                    // read-ahead bytes pending delivery (probe buffer)
 
 	// metadata
 	tape *TapeInfo
@@ -80,12 +87,51 @@ func (r *Reader) Tape() *TapeInfo { return r.tape }
 // or nil if none has been encountered yet.
 func (r *Reader) Set() *SetInfo { return r.set }
 
-// absPosition reports the byte offset already consumed from the underlying
-// stream. It is intended for diagnostics and index-building.
-// Position reports the byte offset already consumed from the underlying stream.
-// It is intended for diagnostics and for building seek indexes for random
-// access extraction.
+// Position reports the byte offset already consumed from the underlying
+// stream. It is intended for diagnostics and for building seek indexes for
+// random access extraction.
 func (r *Reader) Position() int64 { return r.abspos }
+
+// MediaSequence reports the 1-based index of the current physical medium.
+// It is 1 for the initial medium and increments each time a continuation
+// medium supplied via [Reader.SetContinuation] is switched to. It is always 1
+// for non-spanned archives.
+func (r *Reader) MediaSequence() int { return r.mediaSeq + 1 }
+
+// read drains any pending read-ahead (probe bytes) then reads from the
+// underlying stream into p. It returns the number of bytes read and any error.
+// Callers are responsible for accounting (flbread/abspos) for the returned bytes.
+func (r *Reader) read(p []byte) (int, error) {
+	var n int
+	if len(r.peek) > 0 {
+		n = copy(p, r.peek)
+		r.peek = r.peek[n:]
+	}
+	if n == len(p) {
+		return n, nil
+	}
+	nr, err := r.r.Read(p[n:])
+	return n + nr, err
+}
+
+// readFull reads exactly len(p) bytes, draining read-ahead first. It mirrors
+// io.ReadFull but routes through read so probe bytes are delivered in order.
+func (r *Reader) readFull(p []byte) (int, error) {
+	var total int
+	for total < len(p) {
+		n, err := r.read(p[total:])
+		if n > 0 {
+			total += n
+		}
+		if err != nil {
+			return total, err
+		}
+		if n == 0 {
+			return total, io.ErrUnexpectedEOF
+		}
+	}
+	return total, nil
+}
 
 // ensure reads from the underlying stream until blk holds at least n bytes.
 // It never reads past n buffered bytes (mirroring mtfscan_ready, which reads
@@ -99,7 +145,7 @@ func (r *Reader) ensure(n int) error {
 		} else {
 			buf = buf[:want]
 		}
-		nr, err := r.r.Read(buf)
+		nr, err := r.read(buf)
 		if nr > 0 {
 			r.blk = append(r.blk, buf[:nr]...)
 			r.flbread += uint32(nr)
@@ -132,7 +178,7 @@ func (r *Reader) wrapFlbread() {
 func (r *Reader) skipStreamData(n int64) error {
 	for n > 0 {
 		chunk := min(n, int64(len(r.scratch)))
-		nr, err := io.ReadFull(r.r, r.scratch[:chunk])
+		nr, err := r.readFull(r.scratch[:chunk])
 		if nr > 0 {
 			r.flbread += uint32(nr)
 			r.abspos += int64(nr)
@@ -149,14 +195,43 @@ func (r *Reader) skipStreamData(n int64) error {
 
 // readStreamData reads up to len(p) bytes of the current stream's data into p.
 func (r *Reader) readStreamData(p []byte) (int, error) {
-	nr, err := io.ReadFull(r.r, p)
-	if nr > 0 {
-		r.flbread += uint32(nr)
-		r.abspos += int64(nr)
-		r.streamDid += int64(nr)
-		r.wrapFlbread()
+	total := 0
+	for total < len(p) && r.dataRem > 0 {
+		if r.atFLBBoundary() {
+			if err := r.probeEOTM(); err != nil {
+				// A genuine medium boundary was hit mid-stream: re-sync.
+				if err == errSpanned {
+					if err := r.advanceToContinuationStream(); err != nil {
+						return total, err
+					}
+					continue // dataRem now reflects the continuation stream
+				}
+				return total, err
+			}
+		}
+
+		dist := r.distToBoundary()
+		want := min(r.dataRem, int64(len(p)-total))
+		if dist > 0 && dist < want {
+			want = dist
+		}
+		if want == 0 {
+			want = r.dataRem
+		}
+		nr, err := r.readFull(p[total : total+int(want)])
+		if nr > 0 {
+			r.flbread += uint32(nr)
+			r.abspos += int64(nr)
+			r.streamDid += int64(nr)
+			r.dataRem -= int64(nr)
+			total += nr
+		}
+		if err != nil {
+			return total, err
+		}
 	}
-	return nr, err
+	r.wrapFlbread()
+	return total, nil
 }
 
 // scanStart reads the common descriptor block of the next logical block.
@@ -224,6 +299,7 @@ func (r *Reader) scanNext() error {
 func (r *Reader) readStreamHeader() {
 	off := int(r.streamOff)
 	r.streamType = u32(r.blk, off+stTypeOff)
+	r.streamMediaAttr = u16(r.blk, off+stMediaAttrOff)
 	r.streamLen = int64(u64(r.blk, off+stLengthOff))
 	r.streamDid = 0
 }
@@ -293,6 +369,9 @@ func (r *Reader) Next() (*Header, error) {
 
 		switch blockType(r.blk) {
 		case dbTAPE:
+			// A TAPE block seen mid-stream is a continuation media header when
+			// spanning; otherwise the initial header. Adopt its logical block
+			// size and continue.
 			if err := r.parseTape(); err != nil {
 				return nil, err
 			}
@@ -305,32 +384,53 @@ func (r *Reader) Next() (*Header, error) {
 			if err := r.parseEset(); err != nil {
 				return nil, err
 			}
-		case dbSFMB, dbESPB, dbEOTM, dbCFIL:
+		case dbEOTM:
+			// End of medium between entries: switch to the continuation medium.
+			if err := r.scanNext(); err != nil {
+				return r.endOrError(err)
+			}
+			if r.switchMedium() {
+				continue // resume scanning the continuation medium
+			}
+			return nil, io.EOF
+		case dbSFMB, dbESPB, dbCFIL:
 			// metadata / padding blocks: nothing to expose
-
 		case dbVOLB:
-			h, err := r.parseVolb()
-			if err != nil {
-				return nil, err
+			if u32(r.blk, dbAttrOff)&AttrContinuation != 0 {
+				// Continuation volume context: restore silently, no entry.
+				if _, err := r.restoreVolb(); err != nil {
+					return nil, err
+				}
+			} else {
+				h, err := r.parseVolb()
+				if err != nil {
+					return nil, err
+				}
+				if err := r.scanNext(); err != nil {
+					return r.endOrError(err)
+				}
+				r.cur = h
+				r.entryDone = true
+				return h, nil
 			}
-			if err := r.scanNext(); err != nil {
-				return r.endOrError(err)
-			}
-			r.cur = h
-			r.entryDone = true
-			return h, nil
-
 		case dbDIRB:
-			h, err := r.parseDirb()
-			if err != nil {
-				return nil, err
+			if u32(r.blk, dbAttrOff)&AttrContinuation != 0 {
+				// Continuation directory context: restore silently, no entry.
+				if _, err := r.restoreDirb(); err != nil {
+					return nil, err
+				}
+			} else {
+				h, err := r.parseDirb()
+				if err != nil {
+					return nil, err
+				}
+				if err := r.scanNext(); err != nil {
+					return r.endOrError(err)
+				}
+				r.cur = h
+				r.entryDone = true
+				return h, nil
 			}
-			if err := r.scanNext(); err != nil {
-				return r.endOrError(err)
-			}
-			r.cur = h
-			r.entryDone = true
-			return h, nil
 
 		case dbFILE:
 			h, err := r.parseFile()
@@ -385,10 +485,18 @@ func (r *Reader) finishEntry() error {
 	defer func() { r.entryDone = true }()
 
 	if r.inData && r.dataRem > 0 {
-		if err := r.skipStreamData(r.dataRem); err != nil {
+		// Skip the remaining STAN data. This must be media-spanning aware: a
+		// caller may discard (not read) a file whose data is split across media.
+		if err := r.skipRemainingData(); err != nil {
 			return err
 		}
 		r.dataRem = 0
+	}
+	// A cross-media continuation stream has FLB-aligned data with no trailing
+	// SPAD: just advance to the next block boundary.
+	if r.streamContinued {
+		r.streamContinued = false
+		return r.scanNext()
 	}
 	for !r.lastStream {
 		if err := r.streamNext(); err != nil {
@@ -397,6 +505,38 @@ func (r *Reader) finishEntry() error {
 	}
 	if err := r.scanNext(); err != nil {
 		return err
+	}
+	return nil
+}
+
+// skipRemainingData discards the remaining bytes of the current STAN data
+// stream, transparently spanning continuation media if the data is split.
+func (r *Reader) skipRemainingData() error {
+	for r.dataRem > 0 {
+		if r.atFLBBoundary() {
+			if err := r.probeEOTM(); err != nil {
+				if err == errSpanned {
+					if err := r.advanceToContinuationStream(); err != nil {
+						return err
+					}
+					continue
+				}
+				return err
+			}
+		}
+		dist := r.distToBoundary()
+		want := r.dataRem
+		if dist > 0 && dist < want {
+			want = dist
+		}
+		if want == 0 {
+			want = r.dataRem
+		}
+		before := r.streamDid
+		if err := r.skipStreamData(want); err != nil {
+			return err
+		}
+		r.dataRem -= r.streamDid - before
 	}
 	return nil
 }
@@ -419,7 +559,6 @@ func (r *Reader) Read(p []byte) (int, error) {
 		n = int(r.dataRem)
 	}
 	nr, err := r.readStreamData(p[:n])
-	r.dataRem -= int64(nr)
 	if r.dataRem <= 0 {
 		if ferr := r.finishEntry(); ferr != nil {
 			return nr, ferr
@@ -575,6 +714,44 @@ func (r *Reader) parseEset() error {
 	}
 	r.corrupt = u32(r.blk, esetCorruptOff)
 	return nil
+}
+
+// restoreVolb parses a continuation VOLB block to restore the volume/device
+// context without emitting an entry. Used when re-synchronizing onto a
+// continuation medium.
+func (r *Reader) restoreVolb() (*Header, error) {
+	if err := r.ensure(volbCTimeOff + 6); err != nil {
+		return nil, err
+	}
+	if sz, po := tapepos(r.blk, volbDeviceOff); sz > 0 {
+		device, err := r.stringAt(sz, po, '/')
+		if err != nil {
+			return nil, err
+		}
+		r.volume = device
+	}
+	return nil, nil
+}
+
+// restoreDirb parses a continuation DIRB block to restore the directory
+// context without emitting an entry. Used when re-synchronizing onto a
+// continuation medium.
+func (r *Reader) restoreDirb() (*Header, error) {
+	if err := r.ensure(dirbNameOff + 4); err != nil {
+		return nil, err
+	}
+	attr := u32(r.blk, dirbAttrOff)
+	if attr&0x20000 == 0 {
+		if sz, po := tapepos(r.blk, dirbNameOff); sz > 0 {
+			name, err := r.stringAt(sz, po, '/')
+			if err != nil {
+				return nil, err
+			}
+			r.cwd = name
+			r.cwdID = u32(r.blk, dirbIDOff)
+		}
+	}
+	return nil, nil
 }
 
 // CorruptObjects returns the corrupt-object count reported by the most recent

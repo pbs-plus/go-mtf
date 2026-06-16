@@ -5,6 +5,11 @@
 // (https://github.com/geocar/mtftar) to idiomatic Go. It supports reading
 // (listing and extracting file data) from MTF/BKF streams.
 //
+// Archives that span multiple physical media (tapes or .bkf files) are
+// supported via [Reader.SetContinuation], which supplies the next medium when
+// an End Of Tape Marker (EOTM) is encountered — whether between entries or in
+// the middle of a file's data stream. See the MTF spec, section 8.
+//
 // The primary entry point is the [Reader], which mirrors the archive/tar API:
 //
 //	r, err := mtf.Open("backup.bkf")
@@ -105,6 +110,29 @@ var (
 	dbESET = [4]byte{'E', 'S', 'E', 'T'}
 	dbEOTM = [4]byte{'E', 'O', 'T', 'M'}
 	dbSFMB = [4]byte{'S', 'F', 'M', 'B'}
+)
+
+// Common Block Attributes (MTF_DB_HDR Block Attributes field, offset 4).
+// These apply to the common header of any descriptor block.
+const (
+	// AttrContinuation (MTF_CONTINUATION, BIT0) is set on descriptor blocks that
+	// are repeated on a continuation medium to restore context after an End of
+	// Media (EOTM). See MTF spec section 8 (End Of Media Processing).
+	AttrContinuation uint32 = 0x00000001
+	// AttrCompression indicates compression may be active.
+	AttrCompression uint32 = 0x00000002
+	// AttrEOSAtEOM indicates End Of Medium was hit during end-of-set processing.
+	AttrEOSAtEOM uint32 = 0x00000004
+)
+
+// Stream Media Format Attributes (MTF_STREAM_HDR Stream Media Format Attributes
+// field, stream header offset 6).
+const (
+	// StreamMediaContinue (STREAM_CONTINUE, BIT0) marks a stream whose data is a
+	// continuation of a stream split across media at EOM. Its Stream Length holds
+	// only the remaining (unwritten) portion and its data begins at the next
+	// Format Logical Block boundary. See MTF spec section 6.1.
+	StreamMediaContinue uint16 = 0x0001
 )
 
 // Stream data type identifiers. These are the four-byte stream type codes read
