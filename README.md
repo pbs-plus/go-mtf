@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/pbs-plus/go-mtf.svg)](https://pkg.go.dev/github.com/pbs-plus/go-mtf)
 
-A pure-Go library for reading **Microsoft Tape Format (MTF)** streams — the
+A pure-Go library for reading **Microsoft Tape Format (MTF)** streams - the
 format produced by `NTBACKUP.EXE` and commonly found in `.bkf` backup files.
 
 Features media spanning, transparent decompression, sparse reconstruction,
@@ -18,8 +18,9 @@ Media Based Catalog parsing, and near-zero-allocation classification.
 - **Transparent decompression** - Stac LZS (`MTF_LZS221`) and the
   compression/encryption frame layer; encryption via a pluggable decryptor
   (the spec defines no cipher).
-- **Multi-media spanning** - reassembles a data set split across media,
-  including mid-file splits.
+- **Multi-media spanning** — reassembles a data set split across media,
+  including mid-file splits. The `Continuation` callback gives the application
+  full context (tape name, family ID, sequence) to prompt an operator.
 - **Media Based Catalog** - standard Type 1 Set Map / File/Directory Detail
   parsing, plus a `becatalog` companion for Backup Exec XML catalogs.
 
@@ -51,16 +52,17 @@ for {
 
 Full reference lives in [`docs/`](./docs):
 
-- [Quick start](./docs/quickstart.md) — open, list, extract
-- [Reader API](./docs/reader.md) — `Next`/`Read`, block kinds, `Header` fields
-- [Data streams](./docs/streams.md) — metadata, sparse, compression/encryption
-- [Media Based Catalog](./docs/catalog.md) — Set Map, FDD, `CatalogData`
-- [Spanning](./docs/spanning.md) — multi-media continuation
-- [Backup Exec catalogs](./docs/becatalog.md) — the `becatalog` package
-- [Census](./docs/census.md) — cartridge classification
-- [Performance](./docs/performance.md) — allocation strategy & benchmarks
-- [Architecture](./docs/architecture.md) — package layout & reader pipeline
-- [Spec reference](./docs/spec.md) — MTF field offsets & checksums
+- [Quick start](./docs/quickstart.md) - open, list, extract
+- [Reader API](./docs/reader.md) - `Next`/`Read`, block kinds, `Header` fields
+- [Data streams](./docs/streams.md) - metadata, sparse, compression/encryption
+- [Media Based Catalog](./docs/catalog.md) - Set Map, FDD, `CatalogData`
+- [Spanning](./docs/spanning.md) - multi-media continuation with operator prompts
+- [LTO tapes](./docs/lto.md) - reading from LTO tape drives
+- [Backup Exec catalogs](./docs/becatalog.md) - the `becatalog` package
+- [Census](./docs/census.md) - cartridge classification
+- [Performance](./docs/performance.md) - allocation strategy & benchmarks
+- [Architecture](./docs/architecture.md) - package layout & reader pipeline
+- [Spec reference](./docs/spec.md) - MTF field offsets & checksums
 
 ## Command-line tools
 

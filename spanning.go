@@ -62,21 +62,24 @@ func (r *Reader) probeEOTM() error {
 // This enables reading a single backup data set that spans multiple media
 // (tapes or .bkf files). When the reader encounters an End Of Tape Marker
 // (EOTM) — whether between entries or in the middle of a file's data stream —
-// it calls next to obtain the continuation medium's reader and resumes.
+// it calls next with a [Continuation] describing the medium that just ended,
+// and resumes from the reader next returns.
 //
-//	next := 0
-//	files := []string{"backup-1.bkf", "backup-2.bkf"}
-//	r.SetContinuation(func() (io.Reader, error) {
-//	    next++
-//	    if next >= len(files) {
-//	        return nil, io.EOF
+// The callback is the natural place to prompt an operator to load the next
+// tape, e.g.:
+//
+//	files := []string{"tape-1.bkf", "tape-2.bkf"}
+//	r.SetContinuation(func(c mtf.Continuation) (io.Reader, error) {
+//	    if c.Sequence >= len(files) {
+//	        return nil, io.EOF // no more media
 //	    }
-//	    return os.Open(files[next])
+//	    fmt.Printf("load %s (tape %d)\n", files[c.Sequence], c.Sequence+1)
+//	    return os.Open(files[c.Sequence])
 //	})
 //
 // If next is nil (the default), an EOTM ends the archive like io.EOF. If next
 // returns io.EOF or a nil reader, the archive ends.
-func (r *Reader) SetContinuation(next func() (io.Reader, error)) {
+func (r *Reader) SetContinuation(next func(Continuation) (io.Reader, error)) {
 	r.nextMedia = next
 }
 
@@ -87,7 +90,13 @@ func (r *Reader) switchMedium() bool {
 	if r.nextMedia == nil {
 		return false
 	}
-	nr, err := r.nextMedia()
+	c := Continuation{
+		Sequence: r.mediaSeq + 1, // the medium that just ended is the current one
+	}
+	if r.hasTape {
+		c.Media = &r.tape
+	}
+	nr, err := r.nextMedia(c)
 	if err != nil || nr == nil {
 		return false
 	}

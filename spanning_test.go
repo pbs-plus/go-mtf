@@ -154,12 +154,67 @@ func newSpannedReader(media [][]byte) *Reader {
 	r.SetContinuation(mr.next)
 	return r
 }
-func (m *mediumReader) next() (io.Reader, error) {
+func (m *mediumReader) next(c Continuation) (io.Reader, error) {
 	m.cursor++
 	if m.cursor >= len(m.media) {
 		return nil, io.EOF
 	}
 	return bytes.NewReader(m.media[m.cursor]), nil
+}
+
+// TestContinuationEvent verifies that the continuation callback receives an
+// accurate Continuation describing the exhausted medium.
+func TestContinuationEvent(t *testing.T) {
+	const flb = testFLBSize
+	full := bytes.Repeat([]byte{0xAB}, int(2.5*float64(flb)))
+	name := "split.dat"
+	ft := time.Date(2005, 7, 2, 9, 15, 30, 0, time.Local)
+
+	dataOff := fileStreamOffset(name) + streamHeaderSize
+	endOff := ((dataOff/flb)+2)*flb - dataOff
+	keep := endOff
+	remain := full[keep:]
+
+	var m1 bytes.Buffer
+	m1.Write(buildTapeAttr(0, flb)) // medium 1
+	m1.Write(buildSSETAttr(0))
+	m1.Write(buildVOLBAttr(0, "C:"))
+	m1.Write(buildDIRBAttr(0, 1, "Users"))
+	m1.Write(splitFileFirst(10, 1, name, ft, full, keep))
+	m1.Write(buildEOTM())
+
+	var m2 bytes.Buffer
+	m2.Write(continuationPrefix()) // medium 2
+	m2.Write(continuationFile(10, name, ft, remain, len(remain)))
+	m2.Write(buildESET())
+
+	var got Continuation
+	r := NewReader(bytes.NewReader(m1.Bytes()))
+	r.SetContinuation(func(c Continuation) (io.Reader, error) {
+		got = c
+		return bytes.NewReader(m2.Bytes()), nil
+	})
+	for {
+		blk, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if blk.Kind == KindEntry && blk.Header.Type == EntryFile {
+			io.Copy(io.Discard, r) //nolint:errcheck // read split file, triggers EOTM
+		}
+	}
+	if got.Sequence != 1 {
+		t.Errorf("Continuation.Sequence = %d, want 1", got.Sequence)
+	}
+	if got.Media == nil {
+		t.Fatal("Continuation.Media is nil")
+	}
+	if got.Media.FLBSize != flb {
+		t.Errorf("Continuation.Media.FLBSize = %d, want %d", got.Media.FLBSize, flb)
+	}
 }
 
 // TestSpanningMidFile verifies a file whose STAN data stream is split across

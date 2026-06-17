@@ -51,9 +51,9 @@ type Reader struct {
 	cwd    string
 	cwdID  uint32
 
-	nextMedia func() (io.Reader, error) // supplies the next physical medium
-	mediaSeq  int                       // number of continuation media consumed
-	peek      []byte                    // read-ahead bytes pending delivery (probe buffer)
+	nextMedia func(Continuation) (io.Reader, error) // supplies the next physical medium
+	mediaSeq  int                                   // number of continuation media consumed
+	peek      []byte                                // read-ahead bytes pending delivery (probe buffer)
 
 	// headerOnly skips the *data* of metadata streams (NACL/NTEA/SPAR) instead of
 	// reading them into the Header, and leaves STAN content undelivered. Set by

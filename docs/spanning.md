@@ -11,7 +11,9 @@ entries or **in the middle of a file's data stream**.
 ## SetContinuation
 
 Register a callback that supplies the next medium when the current one is
-exhausted:
+exhausted. The callback receives a [Continuation] describing the exhausted
+medium — use it to prompt an operator, verify the tape label, or log the
+change:
 
 ```go
 files := []string{"backup-1.bkf", "backup-2.bkf", "backup-3.bkf"}
@@ -19,19 +21,45 @@ f, _ := os.Open(files[0])
 r := mtf.NewReader(f)
 
 i := 0
-r.SetContinuation(func() (io.Reader, error) {
+r.SetContinuation(func(c mtf.Continuation) (io.Reader, error) {
 	i++
 	if i >= len(files) {
 		return nil, io.EOF // no more media
 	}
+	fmt.Printf("tape %d ended (%s); loading %s\n",
+		c.Sequence, c.Media.Name, files[i])
 	return os.Open(files[i])
 })
 ```
 
+[Continuation]: ../mtf.go
+
+### Continuation fields
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `Sequence` | `int` | 1-based index of the medium that just ended. The next medium is `Sequence + 1`. |
+| `Media` | `*TapeInfo` | Descriptor of the exhausted medium (name, label, MFMID, FLB size, …). May be nil if no TAPE block was parsed. |
+
 - If the callback is `nil` (the default), an `EOTM` ends the archive (`io.EOF`).
 - If the callback returns `io.EOF` or a nil reader, the archive ends.
+- Return an error to abort the entire read — the error propagates from `Next`/`Read`.
 
-`Reader.MediaSequence()` reports the 1-based index of the current medium.
+### Operator prompt pattern
+
+For physical LTO tapes where an operator must swap cartridges, the callback
+can block until the next tape is loaded:
+
+```go
+r.SetContinuation(func(c mtf.Continuation) (io.Reader, error) {
+	fmt.Printf("━━━ Tape %d ended: %q ━━━\n", c.Sequence, c.Media.Name)
+	fmt.Printf("    Insert tape %d and press Enter.\n", c.Sequence+1)
+	fmt.Scanln() // block until operator confirms
+	return os.Open("/dev/nst0")
+})
+```
+
+See [lto.md](lto.md) for the full LTO reading guide.
 
 ## Between-entry spanning
 
@@ -48,7 +76,7 @@ When an `EOTM` appears in the middle of a file's data stream, the reader:
 1. Detects the `EOTM` at a Format Logical Block boundary (probing without
    consuming stream data) — validated by `FLA == 0` and `CBID == 0` per spec
    §5.2.9 to avoid false positives.
-2. Switches to the continuation medium.
+2. Calls the continuation to get the next medium.
 3. Re-synchronizes onto the continuation `FILE` block's STAN stream (skipping
    the repeated context blocks).
 4. Resumes delivering the remaining data.

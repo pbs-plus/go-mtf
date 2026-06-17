@@ -118,6 +118,6 @@ checksum, so treat the result as advisory.
 
 ```go
 func (r *Reader) HeaderOnly()               // skip metadata data + names
-func (r *Reader) SetContinuation(func() (io.Reader, error))  // see spanning.md
+func (r *Reader) SetContinuation(func(Continuation) (io.Reader, error))  // see spanning.md
 func (r *Reader) SetDecryptor(Decryptor)    // see streams.md
 ```

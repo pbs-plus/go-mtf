@@ -1,10 +1,11 @@
 // Package mtf provides a reader for the Microsoft Tape Format (MTF) used by
-// NTBACKUP.EXE (.bkf) files and Windows tape backups.
+// NTBACKUP.EXE (.bkf) files and LTO tapes.
 //
 // Archives that span multiple physical media (tapes or .bkf files) are
 // supported via [Reader.SetContinuation], which supplies the next medium when
-// an End Of Tape Marker (EOTM) is encountered — whether between entries or in
-// the middle of a file's data stream. See the MTF spec, section 8.
+// an End Of Tape Marker (EOTM) is encountered. The callback receives a
+// [Continuation] with the exhausted medium's name, sequence, and family ID,
+// giving the application enough context to prompt an operator ("insert tape 2").
 //
 // The primary entry point is the [Reader]. [Reader.Next] advances entry by
 // entry and transparently parses each object's data streams, materializing the
@@ -16,14 +17,15 @@
 //	if err != nil { log.Fatal(err) }
 //	defer r.Close()
 //	for {
-//		h, err := r.Next()
+//		b, err := r.Next()
 //		if err == io.EOF { break }
 //		if err != nil { log.Fatal(err) }
-//		fmt.Println(h.Name)
-//		if h.Type == mtf.EntryFile {
-//			io.Copy(os.Stdout, r)
+//		if b.Kind == mtf.KindEntry {
+//			fmt.Println(b.Header.Name)
+//			if b.Header.Type == mtf.EntryFile {
+//				io.Copy(os.Stdout, r)
+//			}
 //		}
-//		// h.SecurityDescriptor holds the NTFS ACL (files and directories).
 //	}
 package mtf
 
@@ -186,6 +188,19 @@ type TapeInfo struct {
 	// MTFMajorVersion is the MTF major revision recorded in the TAPE block.
 	MTFMajorVersion uint8
 	CreateTime      time.Time
+}
+
+// Continuation describes a medium that has just ended and is passed to the
+// callback registered with [Reader.SetContinuation]. It gives the application
+// enough context to prompt an operator to load the next medium (for example,
+// "please insert tape 2 of 5").
+type Continuation struct {
+	// Sequence is the 1-based index of the medium that just ended within the
+	// media family. The next medium to load therefore has Sequence+1.
+	Sequence int
+	// Media holds the descriptor of the exhausted medium, or nil if no TAPE
+	// block was parsed for it.
+	Media *TapeInfo
 }
 
 // SetInfo holds metadata from the MTF start-of-data-set (SSET) block.

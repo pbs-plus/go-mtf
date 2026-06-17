@@ -11,6 +11,7 @@ files.
 | [streams.md](streams.md) | Data-stream materialization: metadata streams, STAN, sparse, compression/encryption |
 | [catalog.md](catalog.md) | Media Based Catalog (MBC): Set Map, File/Directory Detail, `CatalogData` |
 | [spanning.md](spanning.md) | Multi-media spanning: `SetContinuation`, EOTM, mid-file reassembly |
+| [lto.md](lto.md) | Reading from LTO tape drives, operator prompts, tape verification |
 | [becatalog.md](becatalog.md) | Backup Exec XML catalog format (the `becatalog` companion package) |
 | [census.md](census.md) | Cartridge classification with `Census` |
 | [performance.md](performance.md) | Allocation strategy and benchmarks |
