@@ -675,6 +675,32 @@ func (r *Reader) finishEntry() error {
 // skipRemainingData discards the remaining bytes of the current STAN data
 // stream, transparently spanning continuation media if the data is split.
 func (r *Reader) skipRemainingData() error {
+	if r.dataRem <= 0 {
+		return nil
+	}
+	// Fast path for seekable sources: if the remaining stream data fits before
+	// end-of-file, skip it in a single Seek. Mid-stream EOTM (media spanning)
+	// only shortens the data available on this medium, so when the data would
+	// cross EOF we fall back to the careful per-boundary probe path that
+	// detects and follows the EOTM. This avoids one probe read per Format
+	// Logical Block boundary on large single-medium files.
+	if r.seeker != nil {
+		end, err := r.seeker.Seek(0, io.SeekEnd)
+		if err != nil {
+			return err
+		}
+		if r.abspos+r.dataRem <= end {
+			if err := r.skipStreamData(r.dataRem); err != nil {
+				return err
+			}
+			r.dataRem = 0
+			return nil
+		}
+		// Data crosses EOF: re-position to where we were and probe carefully.
+		if _, err := r.seeker.Seek(r.abspos, io.SeekStart); err != nil {
+			return err
+		}
+	}
 	for r.dataRem > 0 {
 		if r.atFLBBoundary() {
 			if err := r.probeEOTM(); err != nil {

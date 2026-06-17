@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	mtf "github.com/pbs-plus/go-mtf"
 )
@@ -38,11 +39,28 @@ func main() {
 	}
 	fmt.Fprintf(os.Stderr, "scanning %d files\n", len(all))
 
-	workers := 8
+	workers := 64
 	jobs := make(chan string)
 	var wg sync.WaitGroup
 	var ri int64
 	res := make([]result, len(all))
+	done := make(chan int64, 1)
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		var last int64
+		for {
+			select {
+			case <-t.C:
+				n := atomic.LoadInt64(&ri)
+				fmt.Fprintf(os.Stderr, "  %d/%d (%.0f/s)\n", n, len(all), float64(n-last)/5)
+				last = n
+			case n := <-done:
+				fmt.Fprintf(os.Stderr, "  %d/%d done\n", n, len(all))
+				return
+			}
+		}
+	}()
 	for range workers {
 		wg.Go(func() {
 			for p := range jobs {
@@ -56,6 +74,7 @@ func main() {
 	}
 	close(jobs)
 	wg.Wait()
+	done <- atomic.LoadInt64(&ri)
 
 	report(res)
 }
