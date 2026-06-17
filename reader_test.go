@@ -10,7 +10,7 @@ import (
 
 // This file builds a minimal, in-memory MTF/BKF stream and validates that the
 // Reader parses it correctly. The byte layout mirrors the field offsets in
-// header.go (themselves a port of mtf.h from mtftar).
+// header.go.
 
 const testFLBSize = 256
 

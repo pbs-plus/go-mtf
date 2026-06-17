@@ -3,11 +3,10 @@ package mtf
 import "time"
 
 // decodeDateTime decodes an MTF date/time field. The field is a packed 5-byte
-// value (within a 6-byte region) laid out as in mtfheader.c::mtf_header_datetime.
+// value (within a 6-byte region).
 //
 // The original backup times are stored in the local time of the machine that
-// produced the archive, so the result is returned in the local time zone
-// (matching the mktime() behaviour of mtftar).
+// produced the archive, so the result is returned in the local time zone.
 func decodeDateTime(b []byte, off int) time.Time {
 	if off+5 > len(b) {
 		return time.Time{}

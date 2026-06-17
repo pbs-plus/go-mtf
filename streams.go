@@ -23,16 +23,16 @@ func (r *Reader) materializeStreams(h *Header) error {
 			r.lastStream = true
 			return nil
 		case StreamNACL:
-			if err := r.captureStream(h, &h.SecurityDescriptor); err != nil {
+			if err := r.captureStream(&h.SecurityDescriptor); err != nil {
 				return err
 			}
 		case StreamNTEA:
-			if err := r.captureStream(h, &h.ExtendedAttributes); err != nil {
+			if err := r.captureStream(&h.ExtendedAttributes); err != nil {
 				return err
 			}
 		case StreamSPAR:
 			var b []byte
-			if err := r.captureStream(h, &b); err != nil {
+			if err := r.captureStream(&b); err != nil {
 				return err
 			}
 			if b != nil {
@@ -100,8 +100,8 @@ func (r *Reader) finishSparse(h *Header) {
 
 // captureStream reads the current stream's bytes into *dst unless the reader
 // is in header-only mode, in which case the bytes are skipped (and *dst stays
-// nil). Named-stream callers pass the address of the target Header field.
-func (r *Reader) captureStream(h *Header, dst *[]byte) error {
+// nil). dst is the address of the target Header field.
+func (r *Reader) captureStream(dst *[]byte) error {
 	if r.headerOnly {
 		return r.skipCurrentStream()
 	}

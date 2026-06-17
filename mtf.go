@@ -1,10 +1,6 @@
 // Package mtf provides a reader for the Microsoft Tape Format (MTF) used by
 // NTBACKUP.EXE (.bkf) files and Windows tape backups.
 //
-// The implementation is a port of Ivo van Poorten / geocar's mtftar
-// (https://github.com/geocar/mtftar) to idiomatic Go. It supports reading
-// (listing and extracting file data) from MTF/BKF streams.
-//
 // Archives that span multiple physical media (tapes or .bkf files) are
 // supported via [Reader.SetContinuation], which supplies the next medium when
 // an End Of Tape Marker (EOTM) is encountered — whether between entries or in

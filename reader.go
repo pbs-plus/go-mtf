@@ -69,9 +69,8 @@ type Reader struct {
 	block  Block  // reused across Next calls (returned by pointer)
 	header Header // reused across entries; block.Header points here
 
-	// reusable slice backing arrays for Header metadata fields. Reset to
-	// length 0 (keeping capacity) at the start of each entry; avoids
-	// reallocating per file.
+	// reusable slice backing arrays for Header metadata fields (truncated to
+	// length 0 each entry, keeping capacity).
 	secBuf  []byte         // SecurityDescriptor backing array
 	eaBuf   []byte         // ExtendedAttributes backing array
 	streams []StreamData   // Streams backing array
@@ -137,10 +136,8 @@ func (r *Reader) HeaderOnly() { r.headerOnly = true }
 // [ErrEncrypted].
 func (r *Reader) SetDecryptor(d Decryptor) { r.decryptor = d }
 
-// resetHeader clears the reusable Header for the next entry. Slice fields are
-// truncated to length zero while retaining their backing arrays, so subsequent
-// appends reuse storage rather than allocating. Scalar fields are zeroed by
-// the caller reassigning them.
+// resetHeader clears the reusable Header for the next entry. Slice fields
+// reuse their backing arrays (truncated to length 0); scalars are reassigned.
 func (r *Reader) resetHeader() {
 	h := &r.header
 	*h = Header{
@@ -290,8 +287,7 @@ func (r *Reader) readFull(p []byte) (int, error) {
 }
 
 // ensure reads from the underlying stream until blk holds at least n bytes.
-// It never reads past n buffered bytes (mirroring mtfscan_ready, which reads
-// exactly the deficit).
+// It never reads past n buffered bytes (it reads exactly the deficit).
 func (r *Reader) ensure(n int) error {
 	for len(r.blk) < n {
 		want := n - len(r.blk)
@@ -338,8 +334,8 @@ func (r *Reader) ensure(n int) error {
 	return nil
 }
 
-// wrapFlbread keeps flbread within [0, flbsize] as mtftar does after reads that
-// can cross logical block boundaries.
+// wrapFlbread keeps flbread within [0, flbsize] after reads that can cross
+// logical block boundaries.
 func (r *Reader) wrapFlbread() {
 	for r.flbsize > 0 && r.flbread > r.flbsize {
 		r.flbread -= r.flbsize
@@ -510,7 +506,7 @@ func (r *Reader) streamStart() error {
 
 // streamNext skips the remainder of the current stream's data and loads the
 // next stream header (4-byte aligned), unless the current stream was SPAD, in
-// which case lastStream is set. This mirrors mtf_stream_copy.
+// which case lastStream is set.
 func (r *Reader) streamNext() error {
 	if rem := r.streamLen - r.streamDid; rem > 0 {
 		if err := r.skipStreamData(rem); err != nil {
@@ -1191,11 +1187,8 @@ func (r *Reader) parseFile() (*Header, error) {
 	r.resetHeader()
 	h := &r.header
 	h.Type = EntryFile
-	// Build the full path (volume/cwd prefix + file name) in one pass into the
-	// reusable buffer, decoding the raw file-name field directly to avoid an
-	// intermediate string allocation. Only the final string() allocates.
-	// In header-only mode the Name is not needed (classification uses only
-	// scalar fields and flags), so skip the string conversion entirely.
+	// Build the full path into the reusable buffer (header-only skips it since
+	// classification uses only scalar fields and flags).
 	if !r.headerOnly {
 		h.Name = r.joinPathDecode(r.volume, r.cwd, sz, po)
 	}

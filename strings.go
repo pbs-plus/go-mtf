@@ -7,12 +7,12 @@ import (
 )
 
 // decodeString decodes an MTF string located in b at pos with the given byte
-// size. It mirrors mtfscan.c::mtfscan_string.
+// size.
 //
 // If strType bit 0 is clear the string is stored as UTF-16LE, otherwise it is
 // stored as ASCII (MS-DOS CP 646). Embedded NUL code units (except a trailing
-// terminator) are replaced with sep, which is how mtftar turns the MTF path
-// separator (NUL) into '/'.
+// terminator) are replaced with sep, which turns the MTF path separator (NUL)
+// into '/'.
 //
 // This standalone form allocates working buffers; the Reader hot path uses
 // [Reader.decodeStringInto] which reuses pooled buffers. It is retained for the
