@@ -171,6 +171,9 @@ type Node struct {
 	OST string
 }
 
+// TreeNode is a node in the hierarchical directory tree produced by
+// [Catalog.BuildTree]. Each TreeNode has a path (e.g. "C:/Users/admin")
+// and may have children.
 // ErrNotBackupExec is returned by [ParseFDD] when the payload is not a Backup
 // Exec catalog (for example a standard MTF binary FDD, or an unrecognized format).
 var ErrNotBackupExec = errors.New("becatalog: not a Backup Exec FDD payload")
@@ -298,3 +301,11 @@ func decodeXML(cat *Catalog, section []byte) error {
 		}
 	}
 }
+
+// BuildTree reconstructs the hierarchical directory tree from the flat [Node]
+// list in [Catalog.Tree]. The RawIndex field of each node names its parent:
+// "." for root, or a numeric string for a child. The returned slice contains
+// one TreeNode per root-level entry (typically one per volume).
+//
+// The tree is built from the first image's nodes. For catalogs with multiple
+// images, filter [Catalog.Tree] before calling if you need a specific image.

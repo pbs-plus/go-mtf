@@ -64,8 +64,14 @@ type Header struct {
 	// NT-based backups that populate the MTF birth-time field.
 	BirthTime time.Time
 	// Attributes is the block's type-specific attribute flags (the DBLK
-	// attributes field that follows the common header).
+	// attributes field that follows the common header). For FILE entries this is
+	// the Windows dwFileAttributes field; for DIRB entries the directory
+	// attributes. Test individual bits with the [WinAttr] constants.
 	Attributes uint32
+	// NTFileFlags is the Windows NT file-specific flags from the OS-specific
+	// data section of a FILE DBLK (OSID 14). It is zero for non-NT entries.
+	// Test individual bits with the [NTFile] constants.
+	NTFileFlags uint32
 	// BlockAttributes is the MTF_DB_HDR common Block Attributes field, which
 	// carries bits such as MTF_CONTINUATION and MTF_COMPRESSION. Use the
 	// Attr* constants to test it.
@@ -85,6 +91,17 @@ type Header struct {
 	FileID uint32
 	// DirID is the identifier of the directory containing the entry.
 	DirID uint32
+	// LinkTarget is the target path for symbolic links and hard links.
+	// It is populated from the NTRP (reparse) stream for symlinks and the
+	// LINK stream for hard links. It is empty for regular entries.
+	LinkTarget string
+	// IsSymlink reports whether this entry is a symbolic link. Set when an
+	// NTRP stream with reparse tag IO_REPARSE_TAG_SYMLINK is present.
+	IsSymlink bool
+	// IsHardLink reports whether this entry is a POSIX hard link. Set when
+	// the NT file flags [NTFileLinkFlag] bit is set or a LINK stream is
+	// present.
+	IsHardLink bool
 
 	// The following describe the file's standard (STAN) data stream and are
 	// meaningful for file entries. They are populated by [Reader.Next].
@@ -321,6 +338,43 @@ const (
 	AttrEOSAtEOM uint32 = 0x00000004
 )
 
+// Windows file attributes (dwFileAttributes). These are the standard
+// Win32 file attribute flags stored in the DBLK Attributes field for
+// FILE and DIRB entries when the OS ID is Windows.
+const (
+	WinAttrReadOnly   uint32 = 0x00000001 // FILE_ATTRIBUTE_READONLY
+	WinAttrHidden     uint32 = 0x00000002 // FILE_ATTRIBUTE_HIDDEN
+	WinAttrSystem     uint32 = 0x00000004 // FILE_ATTRIBUTE_SYSTEM
+	WinAttrDirectory  uint32 = 0x00000010 // FILE_ATTRIBUTE_DIRECTORY
+	WinAttrArchive    uint32 = 0x00000020 // FILE_ATTRIBUTE_ARCHIVE
+	WinAttrDevice     uint32 = 0x00000040 // FILE_ATTRIBUTE_DEVICE
+	WinAttrNormal     uint32 = 0x00000080 // FILE_ATTRIBUTE_NORMAL
+	WinAttrTemporary  uint32 = 0x00000100 // FILE_ATTRIBUTE_TEMPORARY
+	WinAttrSparse     uint32 = 0x00000200 // FILE_ATTRIBUTE_SPARSE_FILE
+	WinAttrReparse    uint32 = 0x00000400 // FILE_ATTRIBUTE_REPARSE_POINT
+	WinAttrCompressed uint32 = 0x00000800 // FILE_ATTRIBUTE_COMPRESSED
+	WinAttrOffline    uint32 = 0x00001000 // FILE_ATTRIBUTE_OFFLINE
+	WinAttrEncrypted  uint32 = 0x00004000 // FILE_ATTRIBUTE_ENCRYPTED
+)
+
+// NT file flags from the OS-specific data section of a FILE DBLK (OS ID 14).
+// These are stored in [Header.NTFileFlags].
+const (
+	// NTFileLinkFlag (BIT0) is set when the file is a POSIX hard link. When
+	// set, the data streams should contain exactly one LINK stream
+	// (STRM_NTFS_LINK) pointing to the link target.
+	NTFileLinkFlag uint32 = 0x00000001
+	// NTFilePOSIX (BIT16) is set when the file is POSIX.
+	NTFilePOSIX uint32 = 0x00010000
+)
+
+// Windows reparse tag values for NTRP streams. These identify the type of
+// reparse point encoded in the [Header.LinkTarget] field.
+const (
+	ReparseTagSymlink uint32 = 0xA000000C // IO_REPARSE_TAG_SYMLINK
+	ReparseTagMount   uint32 = 0xA0000003 // IO_REPARSE_TAG_MOUNT_POINT
+)
+
 // Stream File System Attributes (MTF_STREAM_HDR Stream File System
 // Attributes field, stream header offset 4).
 const (
@@ -364,6 +418,8 @@ const (
 	StreamADAT uint32 = 0x54414441 // NT data
 	StreamNTEA uint32 = 0x4145544E // NT extended attributes
 	StreamNACL uint32 = 0x4C43414E // NT ACL
+	StreamNTRP uint32 = 0x5052544E // NT reparse point (symlinks, mount points)
+	StreamLINK uint32 = 0x4B4E494C // NT hard link target
 	StreamNTED uint32 = 0x4445544E // NT EData
 	StreamNTQU uint32 = 0x5551544E // NT quota
 	StreamNTPR uint32 = 0x5250544E // NT property
@@ -417,6 +473,10 @@ func StreamTypeName(t uint32) string {
 		return "NTEA"
 	case StreamNACL:
 		return "NACL"
+	case StreamNTRP:
+		return "NTRP"
+	case StreamLINK:
+		return "LINK"
 	case StreamNTED:
 		return "NTED"
 	case StreamNTQU:

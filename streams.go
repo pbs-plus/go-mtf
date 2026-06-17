@@ -26,6 +26,18 @@ func (r *Reader) materializeStreams(h *Header) error {
 			if err := r.captureStream(&h.SecurityDescriptor); err != nil {
 				return err
 			}
+		case StreamNTRP:
+			var ntrpData []byte
+			if err := r.captureStream(&ntrpData); err != nil {
+				return err
+			}
+			parseReparsePoint(h, ntrpData)
+		case StreamLINK:
+			var linkData []byte
+			if err := r.captureStream(&linkData); err != nil {
+				return err
+			}
+			parseLinkStream(h, linkData)
 		case StreamNTEA:
 			if err := r.captureStream(&h.ExtendedAttributes); err != nil {
 				return err

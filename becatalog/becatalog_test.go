@@ -193,3 +193,49 @@ func TestParseToleratesBinaryNoise(t *testing.T) {
 		t.Errorf("FamilyGUID lost: %q", cat.Image.FamilyGUID)
 	}
 }
+
+func TestBuildTree(t *testing.T) {
+	cat := &Catalog{
+		Tree: []Node{
+			{Name: ".", RawIndex: ".", OST: ""},
+			{Name: "C:", RawIndex: "0", OST: ""},
+			{Name: "D:", RawIndex: "0", OST: ""},
+			{Name: "Users", RawIndex: "1", OST: ""},
+			{Name: "Windows", RawIndex: "1", OST: ""},
+		},
+	}
+	roots := cat.BuildTree()
+	if len(roots) == 0 {
+		t.Fatal("BuildTree returned no roots")
+	}
+	root := roots[0]
+	if root.Name != "." {
+		t.Errorf("root name = %q, want .", root.Name)
+	}
+	if !root.IsDir {
+		t.Error("root should be a directory")
+	}
+	if len(root.Children) != 2 {
+		t.Errorf("root has %d children, want 2", len(root.Children))
+	}
+	var cDrive *TreeNode
+	for i := range root.Children {
+		if root.Children[i].Name == "C:" {
+			cDrive = &root.Children[i]
+		}
+	}
+	if cDrive == nil {
+		t.Fatal("C: not found in root children")
+	}
+	if len(cDrive.Children) != 2 {
+		t.Errorf("C: has %d children, want 2", len(cDrive.Children))
+	}
+}
+
+func TestBuildTreeEmpty(t *testing.T) {
+	cat := &Catalog{}
+	roots := cat.BuildTree()
+	if len(roots) != 0 {
+		t.Errorf("empty catalog should return no roots, got %d", len(roots))
+	}
+}
