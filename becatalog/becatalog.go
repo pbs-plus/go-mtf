@@ -35,14 +35,42 @@ type Catalog struct {
 	// Image is the catalog image metadata: backup type, time, counts, GUIDs,
 	// machine and resource names.
 	Image Image
-	// Cartridges lists the media cartridges referenced by the catalog, in order.
+	// Cartridges lists the media cartridges referenced by the catalog's
+	// <CatFragment> section. On a consolidated catalog this is only the one
+	// cartridge the catalog file belongs to. For the full family cartridge
+	// list, use [Catalog.AllCartridges].
 	Cartridges []Cartridge
 	// Images is the synthetic-image table (one entry per catalog image).
 	Images []SynthImage
+	// ImageExtras is the per-image cartridge reference table (one entry per
+	// image×cartridge combination). This is where the full list of cartridges
+	// that make up the media family is found — the top-level Cartridges slice
+	// only contains the cartridge this catalog file belongs to.
+	ImageExtras []SynthImageExtraInfo
 	// Tree is the directory tree recorded by the catalog. Each node's RawIndex
 	// (the XML "RI" record index) links it to its parent. The tree may be empty
 	// when the catalog records no directory detail.
 	Tree []Node
+}
+
+// AllCartridges returns the deduplicated set of all cartridges referenced by
+// this catalog, derived from the <SynthImageExtraInfo> entries. This is the
+// complete list of tapes needed to restore the entire media family, in contrast
+// to [Catalog.Cartridges] which only lists the cartridge the catalog file was
+// found on.
+func (c *Catalog) AllCartridges() []string {
+	seen := make(map[string]struct{}, len(c.ImageExtras))
+	result := make([]string, 0, len(c.ImageExtras))
+	for _, e := range c.ImageExtras {
+		if e.CartridgeLabel == "" {
+			continue
+		}
+		if _, ok := seen[e.CartridgeLabel]; !ok {
+			seen[e.CartridgeLabel] = struct{}{}
+			result = append(result, e.CartridgeLabel)
+		}
+	}
+	return result
 }
 
 // FileHeader holds the <CatImageFileHeader> fields.
@@ -111,6 +139,23 @@ type SynthImage struct {
 	CatalogGUID string `xml:"CatalogGUID"`
 	ObjectCount int64  `xml:"ObjectCount"`
 	Status      int64  `xml:"Status"`
+}
+
+// SynthImageExtraInfo is one entry in the <SynthImageExtraInfo> section. Each
+// entry links an image to the cartridge it was written to, giving the full
+// cross-reference that the top-level CatFragment alone does not provide.
+//
+// There can be many more ExtraInfo entries than SynthImage entries: a single
+// logical image that spans multiple cartridges produces one ExtraInfo per
+// cartridge, all sharing the same ImageNumber.
+type SynthImageExtraInfo struct {
+	Size           int64  `xml:"Size"`
+	BackupTimeUTC  int64  `xml:"BackupTimeUTC"`
+	ImageNumber    int    `xml:"ImageNumber"`
+	MediaNumber    int    `xml:"MediaNumber"`
+	BackupType     int    `xml:"BackupType"`
+	ImageName      string `xml:"ImageName"`
+	CartridgeLabel string `xml:"CartridgeLabel"`
 }
 
 // Node is one directory-tree entry (an <ET> element) in the catalog's
@@ -231,6 +276,12 @@ func decodeXML(cat *Catalog, section []byte) error {
 				return err
 			}
 			cat.Images = append(cat.Images, si)
+		case "SynthImageExtraInfo":
+			var ei SynthImageExtraInfo
+			if err := dec.DecodeElement(&ei, &se); err != nil {
+				return err
+			}
+			cat.ImageExtras = append(cat.ImageExtras, ei)
 		case "ET":
 			var n Node
 			for _, a := range se.Attr {

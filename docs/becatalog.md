@@ -54,17 +54,28 @@ The XML embeds a *synthesized disk image* for the whole media family:
 - **Cartridges** — the list of media in the family, each with a label, location,
   and media family name.
 
-### Known limitation
+### Full cartridge list
 
-Each `SynthImage` carries references to the cartridges that contribute to it,
-and a single consolidated-catalog media may describe many cartridges. The
-parser currently captures the cartridge that the catalog fragment belongs to;
-the full cross-referencing of all cartridges per image is not yet complete.
+The top-level `Cartridges` slice only contains the cartridge the catalog file
+belongs to (typically just one entry). The full list of all cartridges in the
+media family is available via `AllCartridges()`, which deduplicates the
+`CartridgeLabel` values from the `SynthImageExtraInfo` entries — one per
+image×cartridge combination:
+
+```go
+tapes := be.AllCartridges()
+fmt.Printf("need %d tapes for full restore\n", len(tapes))
+```
+
+The `Family()` method on the reader automatically incorporates this count,
+using whichever is larger: the MTF Set Map's `TotalTapes` or the BE catalog's
+`AllCartridges()` count.
 
 ## API
 
 ```go
 func ParseFDD(rawFDD []byte) (*Catalog, error)
+func (c *Catalog) AllCartridges() []string
 
 var ErrNotBackupExec error
 
@@ -73,7 +84,18 @@ type Catalog struct {
     Image       Image
     Cartridges  []Cartridge
     Images      []SynthImage
+    ImageExtras []SynthImageExtraInfo // per-image cartridge refs
     Tree        []Node
+}
+
+type SynthImageExtraInfo struct {
+    Size           int64
+    BackupTimeUTC  int64
+    ImageNumber    int
+    MediaNumber    int
+    BackupType     int
+    CartridgeLabel string // the tape this image lives on
+    // ...
 }
 
 type Cartridge struct {

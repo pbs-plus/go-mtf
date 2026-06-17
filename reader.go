@@ -260,6 +260,15 @@ func (r *Reader) Family() MediaFamily {
 			f.TotalTapes = int(maxSeq)
 		}
 	}
+	// When the FDD is a Backup Exec XML catalog, the SynthImageExtraInfo
+	// entries reference all cartridges in the family — a more authoritative
+	// count than the Set Map (which only reflects the MTF-level media
+	// sequences, not the BE-level family).
+	if cat != nil && cat.BECatalog != nil {
+		if n := len(cat.BECatalog.AllCartridges()); n > f.TotalTapes {
+			f.TotalTapes = n
+		}
+	}
 	return f
 }
 

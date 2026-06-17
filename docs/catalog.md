@@ -47,7 +47,7 @@ for {
 When the FDD payload is a Backup Exec XML catalog (`<CatImageFile>`), the
 standard parser finds no binary entries (so `FDD` is empty) and the library
 automatically detects the format. `BECatalog` is populated with the parsed
-Backup Exec catalog, including the cartridge list and image metadata:
+Backup Exec catalog, including image metadata and the full cartridge list:
 
 ```go
 for {
@@ -55,8 +55,9 @@ for {
     if b.Kind == mtf.KindSetEnd && b.Catalog != nil {
         if be := b.Catalog.BECatalog; be != nil {
             fmt.Println("Backup Exec catalog for", be.Image.MachineName)
-            for _, c := range be.Cartridges {
-                fmt.Println("  cartridge:", c.Label, "family:", c.MediaFamilyName)
+            // AllCartridges gives every tape in the family, not just this one.
+            for _, label := range be.AllCartridges() {
+                fmt.Println("  tape:", label)
             }
         }
     }
@@ -81,9 +82,14 @@ if f.SetMap != nil {
 }
 ```
 
-`TotalTapes` is derived from the Set Map — it is the highest `MediaSeq` across
-all data-set entries. On a data-only cartridge (no catalog), `TotalTapes` is 0
-and `SetMap` is nil; on the last (catalog) cartridge, both are fully populated.
+`TotalTapes` is derived from both the Set Map and the Backup Exec catalog
+(when present). The MTF Set Map's `MediaSeq` values reflect the number of
+MTF-level media, while Backup Exec's `AllCartridges()` may reference more
+cartridges (since a single BE media family can span many B2D files). `Family`
+uses whichever count is larger.
+
+On a data-only cartridge (no catalog), `TotalTapes` is 0 and `SetMap` is nil;
+on the last (catalog) cartridge, both are fully populated.
 
 See [spanning.md](spanning.md) for the `Continuation` callback and
 [lto.md](lto.md) for the LTO tape reading guide.
