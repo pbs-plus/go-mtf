@@ -227,6 +227,42 @@ func (r *Reader) Position() int64 { return r.abspos }
 // for non-spanned archives.
 func (r *Reader) MediaSequence() int { return r.mediaSeq + 1 }
 
+// Family returns what is known about the media family from the current
+// cartridge. It combines the TAPE descriptor and the Set Map (if present) to
+// answer questions like "which media family is this tape?" and "how many tapes
+// do I need for a full restore?"
+//
+// Call after the first [KindMedia] block has been processed (which fills
+// [TapeInfo]) and, for the most complete family information, after the first
+// [KindSetEnd] (which fills the Set Map).
+//
+// The Set Map is cumulative — the one on the last cartridge of the family is
+// the most complete. On a data-only cartridge (CatalogType 64) the Set Map
+// may be nil; on a catalog cartridge (CatalogType 128) it is typically present.
+func (r *Reader) Family() MediaFamily {
+	f := MediaFamily{TapeSequence: r.mediaSeq + 1}
+	if r.hasTape {
+		f.ID = r.tape.MFMID
+		f.TapeName = r.tape.Name
+	}
+	cat := r.Catalog()
+	if cat != nil && cat.SetMap != nil {
+		f.SetMap = cat.SetMap
+		// Derive total tapes from the Set Map: the maximum MediaSeq across
+		// all data-set entries tells us how many cartridges the family spans.
+		maxSeq := uint16(0)
+		for _, e := range cat.SetMap.Entries {
+			if e.MediaSeq > maxSeq {
+				maxSeq = e.MediaSeq
+			}
+		}
+		if maxSeq > 0 {
+			f.TotalTapes = int(maxSeq)
+		}
+	}
+	return f
+}
+
 // VerifyChecksum reports whether the common-block header (MTF_DB_HDR)
 // checksum of the current block matches the recomputed word-wise XOR over the
 // remaining header fields (MTF spec, "Header Checksum"). This may be used to

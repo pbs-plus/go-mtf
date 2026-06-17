@@ -5,34 +5,44 @@ spec but writes its own catalog format inside it instead of the spec's binary
 records: a small binary prefix followed by an XML document. The companion
 package `github.com/pbs-plus/go-mtf/becatalog` decodes that format.
 
-This keeps `go-mtf` spec-faithful: the core package only parses the *standard*
-Type 1 binary MBC and exposes raw stream payloads; the vendor-specific XML
-lives in a separate package.
+## Auto-detection
 
-## Parse
+The core `go-mtf` library **automatically detects** Backup Exec FDD payloads.
+When `Catalog.BECatalog` is non-nil, the FDD was a Backup Exec XML catalog and
+the parsed result is directly available:
+
+```go
+for {
+    b, err := r.Next()
+    if err == io.EOF { break }
+    if err != nil { log.Fatal(err) }
+    if b.Kind == mtf.KindSetEnd && b.Catalog != nil {
+        if be := b.Catalog.BECatalog; be != nil {
+            fmt.Println("Backup Exec catalog for", be.Image.MachineName)
+            for _, cart := range be.Cartridges {
+                fmt.Println("  cartridge:", cart.Label, "family:", cart.MediaFamilyName)
+            }
+        }
+    }
+}
+```
+
+For standard MTF binary FDDs, `BECatalog` is nil and `FDD` is populated instead.
+The raw payload is always available in `Catalog.RawFDD` regardless of format.
+
+## Direct parsing
+
+The `becatalog` package can also be used standalone to parse a raw Backup Exec
+FDD payload (for example, one extracted from a different source):
 
 ```go
 import "github.com/pbs-plus/go-mtf/becatalog"
 
-for {
-	b, err := r.Next()
-	if err == io.EOF { break }
-	if err != nil { log.Fatal(err) }
-	if b.Kind != mtf.KindSetEnd || b.Catalog == nil { continue }
-
-	cat, err := becatalog.Parse(b.Catalog) // takes mtf.CatalogData
-	if errors.Is(err, becatalog.ErrNotBackupExec) { continue }
-	if err != nil { log.Fatal(err) }
-
-	for _, cart := range cat.Cartridges {
-		fmt.Println("cartridge", cart.Label, cart.NumFiles, "files")
-	}
-	fmt.Println("image dirs", cat.Image.NumDirectories)
+cat, err := becatalog.ParseFDD(rawFDDBytes)
+if errors.Is(err, becatalog.ErrNotBackupExec) {
+    // not a Backup Exec payload
 }
 ```
-
-`becatalog.Parse` returns `ErrNotBackupExec` for non-BE payloads, so a caller
-can fall back to the standard MTF binary parser in `Catalog.FDD`.
 
 ## What the BE catalog contains
 
@@ -41,8 +51,8 @@ The XML embeds a *synthesized disk image* for the whole media family:
 - **SynthImage** — a tree of directories and files spanning all cartridges in
   the family. Each node carries a name, size, dates, and attributes. This is a
   re-projected view of the backup, not the on-tape DBLK order.
-- **Cartridges** — the list of media in the family, each with a label, number,
-  capacity, and allocated/used bytes.
+- **Cartridges** — the list of media in the family, each with a label, location,
+  and media family name.
 
 ### Known limitation
 
@@ -54,17 +64,22 @@ the full cross-referencing of all cartridges per image is not yet complete.
 ## API
 
 ```go
-func Parse(cd mtf.CatalogData) (*Catalog, error)
 func ParseFDD(rawFDD []byte) (*Catalog, error)
 
 var ErrNotBackupExec error
 
 type Catalog struct {
-	Cartridges []Cartridge
-	Image      SynthImage
-	// ... other top-level fields
+    Header      FileHeader
+    Image       Image
+    Cartridges  []Cartridge
+    Images      []SynthImage
+    Tree        []Node
+}
+
+type Cartridge struct {
+    Label           string // e.g. "B2D027089"
+    Location        string
+    MediaFamilyName string
+    // ...
 }
 ```
-
-`ParseFDD` takes raw TFDD bytes directly (no `mtf.CatalogData` required),
-useful when you already have the stream payload.

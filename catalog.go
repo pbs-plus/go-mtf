@@ -1,6 +1,10 @@
 package mtf
 
-import "time"
+import (
+	"time"
+
+	"github.com/pbs-plus/go-mtf/becatalog"
+)
 
 // Media Based Catalog (MBC). The MTF spec (section 7) defines a Media Based
 // Catalog composed of two parts, written as data streams attached to the
@@ -58,8 +62,13 @@ type Catalog struct {
 	// FDD is the per-data-set File/Directory Detail parsed from the 'TFDD'
 	// stream: every volume, directory and file, in archive order, each carrying
 	// the location (MediaSeq + FLA) of its descriptor block. It is empty when no
-	// standard FDD stream was present.
+	// standard FDD stream was present or when the FDD payload is a Backup Exec
+	// XML catalog (see BECatalog).
 	FDD []CatalogEntry
+	// BECatalog holds the parsed Backup Exec catalog, auto-detected from the
+	// FDD stream. It is nil when the FDD payload is a standard MTF binary
+	// catalog (in which case FDD is populated) or when no FDD stream was present.
+	BECatalog *becatalog.Catalog
 	// RawFDD is the unparsed payload of the FDD data stream. It is populated
 	// whenever an FDD stream was captured, including vendor-specific payloads
 	// the standard parser does not understand (so a vendor parser can take over).
@@ -201,6 +210,13 @@ func (r *Reader) Catalog() *Catalog {
 	}
 	c.FDD = parseFDD(r.catFDDraw)
 	c.SetMap = parseSetMap(r.catSMPraw)
+	// When the standard parser finds no entries (the FDD payload is vendor-
+	// specific), attempt Backup Exec auto-detection.
+	if len(c.FDD) == 0 && len(c.RawFDD) > 0 {
+		if be, err := becatalog.ParseFDD(c.RawFDD); err == nil {
+			c.BECatalog = be
+		}
+	}
 	r.catalog = c
 	return c
 }

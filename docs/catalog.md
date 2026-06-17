@@ -1,103 +1,89 @@
 # Media Based Catalog (MBC)
 
-MTF defines a *Media Based Catalog* written as data streams on the End-of-Set
-(`ESET`) block that closes a data set (spec §7). It has two parts:
+The MTF specification (section 7) defines a **Media Based Catalog** composed of
+two data streams attached to the end-of-set (ESET) descriptor block:
 
-## File/Directory Detail (FDD)
+- **File/Directory Detail (FDD)**: per-data-set index of every volume, directory
+  and file, each annotated with the media sequence number and byte offset of its
+  descriptor block. Stream ID `TFDD` (Type 1) or `FDD2` (Type 2).
+- **Set Map**: cumulative index of every data set in the media family, one entry
+  per backup/host. Stream ID `TSMP` (Type 1) or `MAP2` (Type 2).
 
-Stream ID `TFDD` (Type 1) or `FDD2` (Type 2), spec §7.3.2.
+Both are accessible via `Block.Catalog` when `Kind == KindSetEnd`.
 
-A per-data-set index of every volume, directory and file, each annotated with
-the **media sequence number** and **Format Logical Address** of its descriptor
-block. This lets a reader seek directly to any object.
-
-## Set Map
-
-Stream ID `TSMP` (Type 1) or `MAP2` (Type 2), spec §7.3.3.
-
-A **cumulative** index of every data set in the whole Media Family (one entry
-per backup/host, each followed by its source volumes and machine name). The Set
-Map is rewritten cumulatively as more data sets are appended, so **the Set Map
-on the last cartridge is the most complete**. It is the structure to consult for
-"which backups live in this family and on which media".
-
-## The Catalog type
-
-The `KindSetEnd` block carries the catalog on `Block.Catalog`:
+## Catalog struct
 
 ```go
 type Catalog struct {
-	SetMap    *SetMap        // cumulative Media Family summary (TSMP)
-	FDD       []CatalogEntry // per-set File/Directory Detail (TFDD)
-	RawFDD    []byte         // raw TFDD payload (for vendor parsers)
-	RawSetMap []byte         // raw TSMP payload
+    SetMap   *SetMap          // parsed Type 1 Set Map (nil if absent)
+    FDD      []CatalogEntry   // parsed Type 1 FDD entries (nil if absent)
+    BECatalog *becatalog.Catalog // auto-detected Backup Exec XML catalog
+    RawFDD   []byte           // raw FDD stream payload
+    RawSetMap []byte           // raw Set Map stream payload
 }
 ```
 
-It is `nil` when no MBC streams were present.
+### Standard (Type 1) MBC
+
+When the FDD payload contains standard binary records (`VOLB`/`DIRB`/`FILE`/
+`FEND`), `FDD` and `SetMap` are populated:
 
 ```go
 for {
-	b, err := r.Next()
-	if err == io.EOF { break }
-	if err != nil { log.Fatal(err) }
-	if b.Kind != mtf.KindSetEnd || b.Catalog == nil { continue }
-	for _, ds := range b.Catalog.SetMap.Entries {
-		fmt.Println("set", ds.SetNumber, ds.Name, "files", ds.NumFiles)
-		for _, vol := range ds.Volumes {
-			fmt.Println("  host", vol.MachineName, "vol", vol.Name)
-		}
-	}
+    b, _ := r.Next()
+    if b.Kind == mtf.KindSetEnd && b.Catalog != nil {
+        for _, e := range b.Catalog.FDD {
+            fmt.Println(e.Type, e.Name, "on tape", e.MediaSeq)
+        }
+        for _, e := range b.Catalog.SetMap.Entries {
+            fmt.Println("data set", e.Name, "starts on tape", e.MediaSeq)
+        }
+    }
 }
 ```
 
-### SetMapEntry
+### Backup Exec auto-detection
+
+When the FDD payload is a Backup Exec XML catalog (`<CatImageFile>`), the
+standard parser finds no binary entries (so `FDD` is empty) and the library
+automatically detects the format. `BECatalog` is populated with the parsed
+Backup Exec catalog, including the cartridge list and image metadata:
 
 ```go
-type SetMapEntry struct {
-	MediaSeq, FDDMediaSeq, SetNumber uint16
-	NumDirectories, NumFiles, NumCorrupt uint32
-	Size       uint64
-	Name, Description, Owner string
-	WriteTime  time.Time
-	TimeZone   int8
-	Volumes    []CatalogEntry   // source volumes in this set
-	// ... plus PBA/FLA/attributes for seek indexing
+for {
+    b, _ := r.Next()
+    if b.Kind == mtf.KindSetEnd && b.Catalog != nil {
+        if be := b.Catalog.BECatalog; be != nil {
+            fmt.Println("Backup Exec catalog for", be.Image.MachineName)
+            for _, c := range be.Cartridges {
+                fmt.Println("  cartridge:", c.Label, "family:", c.MediaFamilyName)
+            }
+        }
+    }
 }
 ```
 
-### CatalogEntry
+The raw payload is always available in `RawFDD` regardless of the format,
+so vendor-specific parsers can be written for other non-standard payloads.
+
+## Set Map and media families
+
+The Set Map is the key to understanding a media family from a single cartridge:
 
 ```go
-type CatalogEntry struct {
-	Type        CatalogEntryType  // Volume / Directory / File
-	MediaSeq    uint16   // 1-based medium holding this object's DBLK
-	FLA         uint64   // byte offset of the DBLK on that medium
-	Size        uint64
-	Name        string
-	VolumeLabel, MachineName string   // volume entries
-	// ... plus attributes, times, link
+f := r.Family()
+fmt.Printf("Media family 0x%08X, tape %d of %d\n", f.ID, f.TapeSequence, f.TotalTapes)
+if f.SetMap != nil {
+    for _, ds := range f.SetMap.Entries {
+        fmt.Printf("  data set %q starts on tape %d (%d files, %d dirs)\n",
+            ds.Name, ds.MediaSeq, ds.NumFiles, ds.NumDirectories)
+    }
 }
 ```
 
-`MediaSeq` + `FLA` together locate any object for random-access extraction:
-open medium `MediaSeq`, seek to `FLA`, and the DBLK is there.
+`TotalTapes` is derived from the Set Map — it is the highest `MediaSeq` across
+all data-set entries. On a data-only cartridge (no catalog), `TotalTapes` is 0
+and `SetMap` is nil; on the last (catalog) cartridge, both are fully populated.
 
-## CatalogData interface
-
-A vendor may carry a non-standard payload inside the standard stream envelope.
-For example, **Backup Exec** writes its own XML catalog inside a `TFDD` stream.
-The standard parser leaves the parsed fields empty in that case and exposes the
-raw payload.
-
-`CatalogData` decouples vendor parsers from the concrete type:
-
-```go
-type CatalogData interface {
-	Raw() CatalogRaw   // { FDD, SetMap []byte }
-}
-```
-
-`*Catalog` satisfies it. A vendor parser accepts a `CatalogData` and works
-purely from the bytes, keeping this package spec-faithful. See
-[becatalog.md](becatalog.md).
+See [spanning.md](spanning.md) for the `Continuation` callback and
+[lto.md](lto.md) for the LTO tape reading guide.

@@ -103,6 +103,35 @@ func (r *Reader) Position() int64           // bytes consumed from the stream
 `TapeInfo`, `SetInfo`, `ESetInfo` are the parsed descriptor blocks. See
 [spec.md](spec.md) for the exact field each carries.
 
+## Media family
+
+```go
+type MediaFamily struct {
+    ID           uint32    // Media Family ID (MFMID)
+    TotalTapes   int       // total tapes in this family (0 if unknown)
+    TapeSequence int       // this tape's 1-based position in the family
+    TapeName     string    // tape name/label
+    SetMap       *SetMap   // parsed Set Map, or nil if no catalog on this tape
+}
+
+func (r *Reader) Family() MediaFamily
+```
+
+`Family()` combines the TAPE block and the Set Map (if present) to answer
+questions like "which media family is this?" and "how many tapes do I need?".
+The Set Map is cumulative — the one on the last cartridge is most complete.
+On a data-only cartridge (CatalogType 64) the Set Map may be nil.
+
+`TotalTapes` is derived from the Set Map (the highest `MediaSeq` across
+entries). It is 0 when no Set Map is present.
+
+```go
+f := r.Family()
+fmt.Printf("tape %d of %d, family 0x%08X\n", f.TapeSequence, f.TotalTapes, f.ID)
+```
+
+See [catalog.md](catalog.md) for Set Map and FDD details.
+
 ## Checksums
 
 ```go

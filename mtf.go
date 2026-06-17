@@ -190,10 +190,33 @@ type TapeInfo struct {
 	CreateTime      time.Time
 }
 
-// Continuation describes a medium that has just ended and is passed to the
-// callback registered with [Reader.SetContinuation]. It gives the application
-// enough context to prompt an operator to load the next medium (for example,
-// "please insert tape 2 of 5").
+// MediaFamily summarizes what is known about the media family from a single
+// cartridge. It combines the TAPE descriptor and the Set Map (if present) to
+// answer questions like "which media family is this?" and "how many tapes do I
+// need for a full restore?"
+//
+// Call [Reader.Family] to obtain one.
+type MediaFamily struct {
+	// ID is the Media Family ID (MFMID) from the TAPE block. All cartridges in
+	// the same family share this ID, making it the key for grouping scattered
+	// tapes into a restore set.
+	ID uint32
+	// TotalTapes is the total number of cartridges in this family, derived from
+	// the Set Map (the maximum MediaSeq across all data-set entries). It is 0 when
+	// no Set Map was present — for example a data-only cartridge that is not the
+	// last in the family won't carry a Set Map.
+	TotalTapes int
+	// TapeSequence is this cartridge's 1-based position in the family, matching
+	// [TapeInfo.Sequence].
+	TapeSequence int
+	// TapeName is the name/label of this cartridge.
+	TapeName string
+	// SetMap is the parsed Set Map from this cartridge, or nil if none was
+	// present. Each [SetMapEntry] carries a [SetMapEntry.MediaSeq] that identifies
+	// which tape the data set starts on; scanning them reveals the full set of
+	// tapes in the family.
+	SetMap *SetMap
+}
 type Continuation struct {
 	// Sequence is the 1-based index of the medium that just ended within the
 	// media family. The next medium to load therefore has Sequence+1.

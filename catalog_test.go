@@ -264,3 +264,44 @@ func TestCatalogVendorPayload(t *testing.T) {
 		t.Errorf("RawFDD = %q, want the vendor payload verbatim", string(c.RawFDD))
 	}
 }
+
+func TestCatalogBEAutoDetection(t *testing.T) {
+	// Build a Backup Exec FDD payload: uint32 offset + XML starting with <CatImageFile>.
+	mainXML := `<?xml version="1.0"?>
+<CatImageFile>
+<CatImageFileHeader><MajorVersion>4</MajorVersion><MinorVersion>6</MinorVersion><CatFileType>1</CatFileType><CatFileStatus>0</CatFileStatus><NumOfImages>1</NumOfImages></CatImageFileHeader>
+<CatImage><CatImageAttributes><MachineName>TESTHOST</MachineName><FamilyId>42</FamilyId><BackupType>5</BackupType></CatImageAttributes>
+<CatFragmentEntries><CatFragment><CartridgeLabel>B2D0001</CartridgeLabel><MediaFamilyName>TestFamily</MediaFamilyName></CatFragment></CatFragmentEntries>
+</CatImage>
+</CatImageFile>`
+	var buf bytes.Buffer
+	off := make([]byte, 4)
+	binary.LittleEndian.PutUint32(off, uint32(4))
+	buf.Write(off)
+	buf.WriteString(mainXML)
+	archive := buildMBCArchiveWithFDD(buf.Bytes())
+
+	r := NewReader(bytes.NewReader(archive))
+	for {
+		_, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+	}
+	c := r.Catalog()
+	if c == nil {
+		t.Fatal("Catalog() nil")
+	}
+	if c.BECatalog == nil {
+		t.Fatal("BECatalog nil; Backup Exec FDD should be auto-detected")
+	}
+	if c.BECatalog.Image.MachineName != "TESTHOST" {
+		t.Errorf("BECatalog.Image.MachineName = %q, want TESTHOST", c.BECatalog.Image.MachineName)
+	}
+	if len(c.BECatalog.Cartridges) == 0 || c.BECatalog.Cartridges[0].Label != "B2D0001" {
+		t.Errorf("BECatalog.Cartridges = %v, want B2D0001", c.BECatalog.Cartridges)
+	}
+}

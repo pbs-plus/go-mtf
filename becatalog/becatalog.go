@@ -8,20 +8,10 @@
 // followed by an ASCII XML document (the Backup Exec "Catalog Image File",
 // root element <CatImageFile>).
 //
-// This package is independent of the on-tape framing; it consumes the raw FDD
-// bytes that [github.com/pbs-plus/go-mtf] captures and exposes via its
-// CatalogData interface:
-//
-//	r, _ := mtf.Open("media.bkf")
-//	for {
-//	    b, err := r.Next()
-//	    if err != nil { break }
-//	    if b.Kind == mtf.KindSetEnd && b.Catalog != nil {
-//	        cat, err := becatalog.Parse(b.Catalog)
-//	        if err != nil { ... }
-//	        _ = cat // Backup Exec catalog for this data set
-//	    }
-//	}
+// When the parent [go-mtf] library detects a Backup Exec FDD, it populates
+// [mtf.Catalog.BECatalog] automatically. Most callers should use that field
+// directly rather than calling [ParseFDD] themselves. This package is only
+// needed when parsing a raw Backup Exec FDD payload outside the reader loop.
 //
 // The parser is read-only and tolerant: unknown elements are ignored.
 package becatalog
@@ -33,8 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-
-	mtf "github.com/pbs-plus/go-mtf"
 )
 
 // Catalog is a parsed Backup Exec catalog image (one <CatImageFile>). It
@@ -138,27 +126,9 @@ type Node struct {
 	OST string
 }
 
-// ErrNotBackupExec is returned by [Parse] when the payload is not a Backup Exec
-// catalog (for example a standard MTF binary FDD, or an unrecognized format).
+// ErrNotBackupExec is returned by [ParseFDD] when the payload is not a Backup
+// Exec catalog (for example a standard MTF binary FDD, or an unrecognized format).
 var ErrNotBackupExec = errors.New("becatalog: not a Backup Exec FDD payload")
-
-// Parse decodes the Backup Exec catalog payload carried by a standard MTF FDD
-// data stream. It accepts the [mtf.CatalogData] produced by go-mtf (for example
-// the *mtf.Catalog returned by [mtf.Reader.Catalog]) and reads its raw FDD
-// bytes.
-//
-// It returns [ErrNotBackupExec] if the payload does not carry a Backup Exec
-// catalog, so callers can fall back to the standard MTF binary parser.
-func Parse(data mtf.CatalogData) (*Catalog, error) {
-	if data == nil {
-		return nil, ErrNotBackupExec
-	}
-	raw := data.Raw()
-	if len(raw.FDD) == 0 {
-		return nil, ErrNotBackupExec
-	}
-	return ParseFDD(raw.FDD)
-}
 
 // ParseFDD decodes raw Backup Exec FDD bytes into a [Catalog]. It is the same as
 // [Parse] but operates directly on the raw byte slice.

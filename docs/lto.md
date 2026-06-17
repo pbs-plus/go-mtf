@@ -61,6 +61,48 @@ backups, skip between them with:
 mt -f /dev/nst0 fsf 1   # forward space 1 filemark
 ```
 
+## Identifying a tape
+
+Given a single random tape, you can determine which media family it belongs to
+and how many tapes you need for a full restore:
+
+```go
+f, _ := os.Open("/dev/nst0")
+r := mtf.NewReader(f)
+
+// Read just the first block (TAPE) to identify the cartridge.
+blk, _ := r.Next()
+if blk.Kind == mtf.KindMedia {
+    fmt.Printf("tape %q, family 0x%08X\n", blk.Tape.Name, blk.Tape.MFMID)
+}
+
+// Continue to the end of the data set to get the catalog.
+for {
+    blk, err := r.Next()
+    if err == io.EOF { break }
+    if err != nil { log.Fatal(err) }
+    if blk.Kind == mtf.KindSetEnd && blk.Catalog != nil {
+        // The Set Map on this tape lists every data set and which
+        // tape each starts on.
+        if sm := blk.Catalog.SetMap; sm != nil {
+            fmt.Printf("media family 0x%08X, %d data sets\n", sm.MediaFamilyID, len(sm.Entries))
+            for _, ds := range sm.Entries {
+                fmt.Printf("  set %q on tape %d (%d files, %d dirs)\n",
+                    ds.Name, ds.MediaSeq, ds.NumFiles, ds.NumDirectories)
+            }
+        }
+    }
+}
+
+// Or use the Family() helper for a quick summary.
+f2 := r.Family()
+fmt.Printf("tape %d of %d\n", f2.TapeSequence, f2.TotalTapes)
+```
+
+`Family()` is available after the first `KindMedia` block. On a data-only
+cartridge (no catalog), `TotalTapes` will be 0 and `SetMap` will be nil;
+the last (catalog) cartridge has the complete Set Map.
+
 ## Multi-tape spanning
 
 When a backup spans multiple tapes, the reader calls the continuation

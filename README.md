@@ -22,7 +22,11 @@ Media Based Catalog parsing, and near-zero-allocation classification.
   including mid-file splits. The `Continuation` callback gives the application
   full context (tape name, family ID, sequence) to prompt an operator.
 - **Media Based Catalog** - standard Type 1 Set Map / File/Directory Detail
-  parsing, plus a `becatalog` companion for Backup Exec XML catalogs.
+  parsing, auto-detected Backup Exec XML catalogs, and a `becatalog` companion
+  for vendor-specific payloads.
+- **Media family identification** - `Family()` combines the TAPE block and Set
+  Map to tell you the family ID, total tape count, and which data sets live on
+  which tapes. Essential for the "I have one tape, what do I need?" use case.
 
 ## Quick start
 

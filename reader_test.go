@@ -261,6 +261,39 @@ func TestReaderSetAndTape(t *testing.T) {
 	}
 }
 
+func TestFamily(t *testing.T) {
+	// Use the MBC archive which has a SetMap.
+	r := NewReader(bytes.NewReader(buildMBCArchive()))
+	for {
+		blk, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = blk
+	}
+
+	f := r.Family()
+	if f.TapeSequence != 1 {
+		t.Errorf("Family.TapeSequence = %d, want 1", f.TapeSequence)
+	}
+	if f.SetMap == nil {
+		t.Error("Family.SetMap is nil (catalog not parsed)")
+	} else {
+		if f.TotalTapes != 1 {
+			t.Errorf("Family.TotalTapes = %d, want 1", f.TotalTapes)
+		}
+		if f.SetMap.MediaFamilyID == 0 {
+			t.Error("Family.SetMap.MediaFamilyID is zero")
+		}
+		if len(f.SetMap.Entries) == 0 {
+			t.Error("Family.SetMap.Entries is empty")
+		}
+	}
+}
+
 func TestReaderSkipWithoutRead(t *testing.T) {
 	// Iterate without reading file bodies; the reader must still resync.
 	r := NewReader(bytes.NewReader(buildArchive()))

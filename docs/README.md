@@ -9,7 +9,7 @@ files.
 | [quickstart.md](quickstart.md) | Install, open a file, list entries, extract content |
 | [reader.md](reader.md) | The `Reader`/`Block`/`Header` API: `Next`, `Read`, block kinds, entry fields |
 | [streams.md](streams.md) | Data-stream materialization: metadata streams, STAN, sparse, compression/encryption |
-| [catalog.md](catalog.md) | Media Based Catalog (MBC): Set Map, File/Directory Detail, `CatalogData` |
+| [catalog.md](catalog.md) | Media Based Catalog (MBC): Set Map, FDD, auto-detected Backup Exec, `Family()` |
 | [spanning.md](spanning.md) | Multi-media spanning: `SetContinuation`, EOTM, mid-file reassembly |
 | [lto.md](lto.md) | Reading from LTO tape drives, operator prompts, tape verification |
 | [becatalog.md](becatalog.md) | Backup Exec XML catalog format (the `becatalog` companion package) |
