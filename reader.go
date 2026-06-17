@@ -557,8 +557,38 @@ func (r *Reader) streamStart() error {
 	if err := r.ensure(int(r.streamOff) + streamHeaderSize); err != nil {
 		return err
 	}
+	// Per MTF spec ("Offset To First Event"): when a DBLK has no data streams,
+	// the Offset To First Event points to the *next* DBLK rather than to a
+	// stream header. Backup Exec writes stream-less SSET/VOLB/DIRB/ESPB blocks
+	// this way. Disambiguate using the spec's method: if the bytes at the
+	// offset form a known DBLK type with a valid header checksum, the current
+	// block has no streams. Treat it as already-finished so materializeStreams
+	// returns immediately and the caller advances to the next block.
+	if r.streamOff >= dbCommonSize && isDBLKHeader(r.blk[r.streamOff:]) {
+		r.lastStream = true
+		r.streamType = StreamSPAD
+		r.streamLen = 0
+		r.streamDid = 0
+		return nil
+	}
 	r.readStreamHeader()
 	return nil
+}
+
+// isDBLKHeader reports whether b begins with a known MTF DBLK type whose common
+// header checksum validates. It is the spec's way of telling a descriptor-block
+// header apart from a stream header at a given offset (MTF spec, "Offset To
+// First Event"). The slice must hold at least dbCommonSize bytes.
+func isDBLKHeader(b []byte) bool {
+	if len(b) < 4 {
+		return false
+	}
+	bt := blockType(b)
+	switch bt {
+	case dbTAPE, dbSSET, dbVOLB, dbDIRB, dbFILE, dbCFIL, dbESPB, dbESET, dbEOTM, dbSFMB:
+		return checksumValid(b)
+	}
+	return false
 }
 
 // streamNext skips the remainder of the current stream's data and loads the

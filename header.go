@@ -1,19 +1,22 @@
 package mtf
 
 const (
-	dbTypeOff     = 0  // block type (4 bytes)
-	dbAttrOff     = 4  // common attributes (uint32)
-	dbOffOff      = 8  // offset to first stream (uint16)
-	dbOSIDOff     = 10 // operating system id (uint8)
-	dbOSVerOff    = 11 // operating system version (uint8)
-	dbSizeOff     = 12 // logical block size (uint64)
-	dbFLAOff      = 20 // fields/link area offset (uint64)
-	dbCBIDOff     = 36 // control block id (uint32)
-	dbOSDataOff   = 40 // os-specific data (tape_pos: size, pos)
-	dbStrTypeOff  = 44 // string type (uint8): bit0 clear=UTFC16LE, set=ASCII
-	dbChecksumOff = 46 // checksum (uint16)
+	dbTypeOff  = 0  // block type (4 bytes)
+	dbAttrOff  = 4  // common attributes (uint32)
+	dbOffOff   = 8  // offset to first stream (uint16)
+	dbOSIDOff  = 10 // operating system id (uint8)
+	dbOSVerOff = 11 // operating system version (uint8)
+	dbSizeOff  = 12 // displayable size (uint64)
+	dbFLAOff   = 20 // format logical address (uint64)
+	dbCBIDOff  = 36 // control block id (uint32)
+	// Per MTF spec (MTF_DB_HDR, Structure 4): offset 40 is a 4-byte Reserved
+	// field, OS Specific Data is at offset 44, String Type at 48, and the
+	// Header Checksum at 50 — the common header is 52 bytes total.
+	dbOSDataOff   = 44 // os-specific data (tape_pos: size, pos)
+	dbStrTypeOff  = 48 // string type (uint8): bit0 clear=UTFC16LE, set=ASCII
+	dbChecksumOff = 50 // header checksum (uint16)
 
-	dbCommonSize = 48 // size of the common descriptor block
+	dbCommonSize = 52 // size of the common descriptor block (MTF_DB_HDR)
 
 	streamHeaderSize = 22 // size of a stream descriptor header
 )
@@ -135,7 +138,7 @@ func blockType(b []byte) [4]byte { return [4]byte{b[0], b[1], b[2], b[3]} }
 
 // commonChecksum returns the MTF common-block header checksum for the given
 // block: a 16-bit word-wise XOR over all MTF_DB_HDR fields except the checksum
-// field itself (bytes 0..45, i.e. 23 little-endian words). See MTF spec,
+// field itself (bytes 0..49, i.e. 25 little-endian words). See MTF spec,
 // "Header Checksum".
 func commonChecksum(b []byte) uint16 {
 	if len(b) < dbChecksumOff {
