@@ -3,6 +3,7 @@ package mtf
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -314,3 +315,114 @@ func TestMaterializeSparseFile(t *testing.T) {
 		t.Fatalf("sparse content = %q, want %q", got, want)
 	}
 }
+
+// TestLargeCatalogStreamNotCapped is the regression test for the Backup Exec
+// archive whose ESET carried a 154 MiB TFDD Media Based Catalog. Before the
+// fix, captureCatalog routed catalog streams through readStreamBytes, which
+// rejects any stream above maxMetadataStreamSize (64 MiB) and aborted the whole
+// conversion at end-of-set. Catalog streams must instead use the higher
+// maxCatalogStreamSize bound.
+func TestLargeCatalogStreamNotCapped(t *testing.T) {
+	// A TFDD catalog stream whose length exceeds the per-file metadata cap but
+	// is well within the catalog cap.
+	catLen := int64(maxMetadataStreamSize + 1)
+	if catLen > maxCatalogStreamSize {
+		t.Skip("catalog cap smaller than metadata cap; test invalid")
+	}
+
+	// Build the raw bytes the reader will consume: the stream header (its
+	// declared length drives the cap check) followed by catLen payload bytes.
+	// We avoid materialising a >64 MiB payload by giving the reader a real
+	// declared length but a short backing stream and asserting the failure is
+	// NOT the "out of range" guard (i.e. the cap is no longer the blocker).
+	hdr := make([]byte, streamHeaderSize)
+	binary.LittleEndian.PutUint32(hdr[stTypeOff:], StreamTFDD)
+	binary.LittleEndian.PutUint64(hdr[stLengthOff:], uint64(catLen))
+	// Only a few payload bytes are actually available; the read will then hit
+	// io.ErrUnexpectedEOF, which is the expected outcome (NOT "out of range").
+	feed := append(hdr, []byte("only-a-few-bytes")...)
+
+	r := NewReader(&nonSeeker{data: feed})
+	r.blk = append(r.blk[:0], hdr...) // stream header already buffered
+	r.streamOff = 0
+	r.streamType = StreamTFDD
+	r.streamLen = catLen
+	r.streamDid = 0
+	// Simulate the metadata-stream path (the old behaviour) rejecting the size.
+	if _, err := r.readStreamBytes(catLen); err == nil ||
+		!containsStr(err.Error(), "out of range") {
+		t.Fatalf("readStreamBytes should reject catalog-sized stream, got: %v", err)
+	}
+	// The catalog path must NOT reject it on the size guard: it should fail
+	// only because the backing stream is short (ErrUnexpectedEOF), proving the
+	// cap no longer blocks large catalogs.
+	_, err := r.readCatalogStream(catLen)
+	if err != nil && containsStr(err.Error(), "out of range") {
+		t.Fatalf("readCatalogStream rejected a valid-sized catalog stream: %v", err)
+	}
+	_ = r
+}
+
+// TestLargeCatalogStreamEndToEnd builds an ESET whose TFDD catalog stream is a
+// real payload slightly larger than maxMetadataStreamSize, embedded in a full
+// archive, and asserts captureCatalog reads it whole without an "out of range"
+// error. Kept small (cap+1 is ~64 MiB) — tagged so it can be skipped under
+// memory pressure.
+func TestLargeCatalogStreamEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates ~64 MiB catalog payload")
+	}
+	catLen := int(maxMetadataStreamSize) + 1
+	payload := make([]byte, catLen) // zero-filled; only length matters here
+
+	// ESET (88-byte common) + TFDD header + payload + 4-align + SPAD + 512-align.
+	eset := make([]byte, 88)
+	copy(eset[0:4], "ESET")
+	eset[44] = 1 // ASCII string type
+	binary.LittleEndian.PutUint16(eset[8:], 88)
+
+	tfddHdr := make([]byte, streamHeaderSize)
+	binary.LittleEndian.PutUint32(tfddHdr[stTypeOff:], StreamTFDD)
+	binary.LittleEndian.PutUint64(tfddHdr[stLengthOff:], uint64(len(payload)))
+	eset = append(eset, tfddHdr...)
+	eset = append(eset, payload...)
+	for len(eset)%4 != 0 {
+		eset = append(eset, 0)
+	}
+	spad := make([]byte, streamHeaderSize)
+	binary.LittleEndian.PutUint32(spad[stTypeOff:], StreamSPAD)
+	eset = append(eset, spad...)
+	for len(eset)%512 != 0 {
+		eset = append(eset, 0)
+	}
+
+	var out bytes.Buffer
+	out.Write(buildTape())
+	out.Write(buildSSET())
+	out.Write(eset)
+	out.Write(bytes.Repeat([]byte{0}, 512)) // trailing zero block / clean EOF
+
+	r := NewReader(bytes.NewReader(out.Bytes()))
+	for {
+		_, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next over large TFDD catalog: %v", err)
+		}
+	}
+	c := r.Catalog()
+	if c == nil {
+		t.Fatal("Catalog() nil after large TFDD stream")
+	}
+	if got, want := len(c.RawFDD), catLen; got != want {
+		t.Errorf("captured catalog payload = %d bytes, want %d", got, want)
+	}
+}
+
+func containsStr(haystack, needle string) bool {
+	return bytes.Contains([]byte(haystack), []byte(needle))
+}
+
+var _ = fmt.Sprintf

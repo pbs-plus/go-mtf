@@ -9,6 +9,13 @@ import (
 // corrupt descriptors that report absurd lengths.
 const maxMetadataStreamSize = 64 << 20 // 64 MiB
 
+// maxCatalogStreamSize is the upper bound for Media Based Catalog streams
+// (TFDD/FDD2/TSMP/MAP2) attached to an ESET. Unlike per-file metadata streams,
+// a catalog enumerates every object in the data set and legitimately reaches
+// hundreds of megabytes on large Backup Exec archives; it is read only once,
+// at end-of-set, so a higher cap is safe and necessary.
+const maxCatalogStreamSize = 4 << 30 // 4 GiB
+
 // materializeStreams walks the data streams of the current descriptor block,
 // collecting the metadata streams that matter for faithful extraction into h
 // and locating the standard data stream (STAN). When STAN is reached the reader
@@ -162,9 +169,22 @@ func (r *Reader) skipCurrentStream() error {
 // freshly allocated slice, advancing the stream and block accounting. Stream
 // data flows continuously across logical-block boundaries (it is not capped to
 // the FLB size), so this reads straight through. Metadata streams never span
-// media, so no EOTM probing is performed.
+// media, so no EOTM probing is performed. n is bounded by maxLen: per-file
+// metadata streams use maxMetadataStreamSize; catalog streams use
+// maxCatalogStreamSize via readCatalogStream.
 func (r *Reader) readStreamBytes(n int64) ([]byte, error) {
-	if n < 0 || n > maxMetadataStreamSize {
+	return r.readStreamBytesMax(n, maxMetadataStreamSize)
+}
+
+// readCatalogStream reads a Media Based Catalog stream (TFDD/FDD2/TSMP/MAP2)
+// which legitimately reaches hundreds of megabytes on large archives. It uses
+// the higher maxCatalogStreamSize bound.
+func (r *Reader) readCatalogStream(n int64) ([]byte, error) {
+	return r.readStreamBytesMax(n, maxCatalogStreamSize)
+}
+
+func (r *Reader) readStreamBytesMax(n, maxLen int64) ([]byte, error) {
+	if n < 0 || n > maxLen {
 		return nil, fmt.Errorf("stream data length %d out of range", n)
 	}
 	buf := make([]byte, n)

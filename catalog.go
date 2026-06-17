@@ -250,14 +250,17 @@ func (r *Reader) captureCatalog() error {
 			r.lastStream = true
 			return nil
 		case StreamTFDD, StreamFDD2:
-			b, err := r.readStreamBytes(r.streamLen)
+			// Catalog streams enumerate every object in the data set and can reach
+			// hundreds of MiB on large Backup Exec archives; use the uncapped
+			// catalog read path rather than the per-file metadata cap.
+			b, err := r.readCatalogStream(r.streamLen)
 			if err != nil {
 				return err
 			}
 			r.catFDDraw = append(r.catFDDraw[:0], b...)
 			r.catalog = nil // invalidate cached parse
 		case StreamTSMP, StreamMAP2, StreamSM2P:
-			b, err := r.readStreamBytes(r.streamLen)
+			b, err := r.readCatalogStream(r.streamLen)
 			if err != nil {
 				return err
 			}
