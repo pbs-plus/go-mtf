@@ -1,8 +1,13 @@
 package mtf
 
 import (
+	"fmt"
 	"io"
 )
+
+// maxMetadataStreamSize caps metadata stream allocations to guard against
+// corrupt descriptors that report absurd lengths.
+const maxMetadataStreamSize = 64 << 20 // 64 MiB
 
 // materializeStreams walks the data streams of the current descriptor block,
 // collecting the metadata streams that matter for faithful extraction into h
@@ -159,6 +164,9 @@ func (r *Reader) skipCurrentStream() error {
 // the FLB size), so this reads straight through. Metadata streams never span
 // media, so no EOTM probing is performed.
 func (r *Reader) readStreamBytes(n int64) ([]byte, error) {
+	if n < 0 || n > maxMetadataStreamSize {
+		return nil, fmt.Errorf("stream data length %d out of range", n)
+	}
 	buf := make([]byte, n)
 	nr, err := r.readFull(buf)
 	if nr > 0 {
