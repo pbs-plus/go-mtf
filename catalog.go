@@ -240,7 +240,7 @@ func (r *Reader) captureCatalog() error {
 			}
 			r.catFDDraw = append(r.catFDDraw[:0], b...)
 			r.catalog = nil // invalidate cached parse
-		case StreamTSMP, StreamMAP2:
+		case StreamTSMP, StreamMAP2, StreamSM2P:
 			b, err := r.readStreamBytes(r.streamLen)
 			if err != nil {
 				return err

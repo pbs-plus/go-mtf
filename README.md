@@ -95,6 +95,12 @@ alignment:
   stream).
 - `Header.SparseExtents` — the parsed sparse map (`[]SparseExtent`, one per
   SPAR stream) for sparse files; `Read` zero-fills the holes.
+- `Header.Streams` — every remaining data stream, verbatim, as
+  `[]StreamData{Type, Data}`. This captures NTFS object IDs (NTOI), quotas
+  (NTQU), per-stream checksums (CSUM), alternate data (ADAT) and any
+  vendor-specific streams that have no dedicated field, so **no stream is
+  ever dropped**. `Type` compares against the `Stream*` constants
+  (e.g. `mtf.StreamNTOI`).
 
 ```go
 for {
@@ -106,11 +112,17 @@ for {
 	if h.SecurityDescriptor != nil {
 		_ = h.SecurityDescriptor    // NTFS ACL, ready to convert
 	}
+	for _, s := range h.Streams {  // object ids, quotas, checksums, ...
+		if s.Type == mtf.StreamNTOI { _ = s.Data }
+	}
 }
 ```
 
-Other streams (object IDs, quotas, alternate data, per-stream checksums) have
-no pxar equivalent and are skipped. File content is streamed lazily through
+Streams both before and after the standard data stream are captured: metadata
+preceding STAN is available when the entry is returned, and streams following
+STAN (e.g. the data checksum) are appended as the content is read. In
+`HeaderOnly` mode the bytes are skipped (not materialized) for cheap
+[Reader.Census] classification. File content is streamed lazily through
 `Read` (spanning-aware); only the small metadata streams are buffered into
 the `Header`.
 

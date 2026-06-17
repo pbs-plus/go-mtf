@@ -135,6 +135,14 @@ type Header struct {
 	// non-hole bytes located at [SparseExtent.Offset] in the logical file;
 	// [Reader.Read] fills the gaps with zero bytes. See MTF spec section 6.2.1.7.
 	SparseExtents []SparseExtent
+	// Streams holds every data stream associated with the entry that is not
+	// carried by a named field above (e.g. NTOI object ids, NTQU quota, CSUM
+	// checksums, ADAT alternate data, or vendor-specific streams). Each element
+	// preserves the stream's four-byte type code and raw bytes so no metadata
+	// is lost. Streams both preceding and following the standard (STAN) data
+	// stream are captured. It is nil in [Reader.HeaderOnly] mode, which skips
+	// stream data, and for entries that have no extra streams.
+	Streams []StreamData
 }
 
 // SparseExtent describes one contiguous block of non-hole data within a sparse
@@ -145,6 +153,14 @@ type SparseExtent struct {
 	// Offset is the logical byte offset within the file where Data begins.
 	Offset int64
 	// Data is the non-hole byte content located at Offset.
+	Data []byte
+}
+
+// StreamData holds the raw bytes of a data stream not otherwise exposed by a
+// named field on [Header]. Type is the four-byte stream type code (compare
+// against the Stream* constants, e.g. [StreamNTOI]).
+type StreamData struct {
+	Type uint32
 	Data []byte
 }
 
@@ -306,6 +322,7 @@ const (
 	StreamTFDD uint32 = 0x44444654 // fdd, media based catalog, type 1
 	StreamMAP2 uint32 = 0x3250414D // set map, media based catalog, type 2
 	StreamFDD2 uint32 = 0x32444446 // fdd, media based catalog, type 2
+	StreamSM2P uint32 = 0x32504D53 // set map, media based catalog (variant)
 
 	StreamADAT uint32 = 0x54414441 // NT data
 	StreamNTEA uint32 = 0x4145544E // NT extended attributes
@@ -314,6 +331,7 @@ const (
 	StreamNTQU uint32 = 0x5551544E // NT quota
 	StreamNTPR uint32 = 0x5250544E // NT property
 	StreamNTOI uint32 = 0x494F544E // NT object id
+	StreamNTQP uint32 = 0x5051544E // NT quota/property (vendor variant)
 
 	StreamGERC uint32 = 0x43524547 // Win9x
 
@@ -352,6 +370,8 @@ func StreamTypeName(t uint32) string {
 		return "TFDD"
 	case StreamMAP2:
 		return "MAP2"
+	case StreamSM2P:
+		return "SM2P"
 	case StreamFDD2:
 		return "FDD2"
 	case StreamADAT:
@@ -368,6 +388,8 @@ func StreamTypeName(t uint32) string {
 		return "NTPR"
 	case StreamNTOI:
 		return "NTOI"
+	case StreamNTQP:
+		return "NTQP"
 	case StreamGERC:
 		return "GERC"
 	case StreamN386:

@@ -661,9 +661,19 @@ func (r *Reader) finishEntry() error {
 		r.streamContinued = false
 		return r.scanNext()
 	}
+	// The STAN data has been consumed (read or skipped). Walk the streams that
+	// follow it (typically a CSUM, possibly ADAT/NTED for alternate/encrypted
+	// data) up to the terminal SPAD, capturing their bytes onto the current
+	// entry so no metadata is lost. This appends to r.cur.Streams; in
+	// header-only mode the bytes are skipped.
 	for !r.lastStream {
 		if err := r.streamNext(); err != nil {
 			return err
+		}
+		if r.streamType != StreamSPAD {
+			if err := r.captureExtra(r.cur); err != nil {
+				return err
+			}
 		}
 	}
 	if err := r.scanNext(); err != nil {

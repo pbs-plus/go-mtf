@@ -23,32 +23,21 @@ func (r *Reader) materializeStreams(h *Header) error {
 			r.lastStream = true
 			return nil
 		case StreamNACL:
-			if r.headerOnly {
-				break
-			}
-			b, err := r.readStreamBytes(r.streamLen)
-			if err != nil {
+			if err := r.captureStream(h, &h.SecurityDescriptor); err != nil {
 				return err
 			}
-			h.SecurityDescriptor = b
 		case StreamNTEA:
-			if r.headerOnly {
-				break
-			}
-			b, err := r.readStreamBytes(r.streamLen)
-			if err != nil {
+			if err := r.captureStream(h, &h.ExtendedAttributes); err != nil {
 				return err
 			}
-			h.ExtendedAttributes = b
 		case StreamSPAR:
-			if r.headerOnly {
-				break
-			}
-			b, err := r.readStreamBytes(r.streamLen)
-			if err != nil {
+			var b []byte
+			if err := r.captureStream(h, &b); err != nil {
 				return err
 			}
-			h.SparseExtents = append(h.SparseExtents, parseSparseExtent(b))
+			if b != nil {
+				h.SparseExtents = append(h.SparseExtents, parseSparseExtent(b))
+			}
 		case StreamSTAN:
 			h.CompressionAlgorithm = r.streamCompAlgo
 			h.EncryptionAlgorithm = r.streamEncAlgo
@@ -66,6 +55,14 @@ func (r *Reader) materializeStreams(h *Header) error {
 				r.dataRem = r.streamLen
 				h.Size = r.streamLen
 				return nil
+			}
+		default:
+			// Any stream without a named field (NTOI, NTQU, CSUM, ADAT,
+			// vendor-specific, ...) is preserved verbatim so no metadata is
+			// lost. Compare StreamData.Type against the Stream* constants to
+			// interpret it.
+			if err := r.captureExtra(h); err != nil {
+				return err
 			}
 		}
 		if r.lastStream {
@@ -86,6 +83,49 @@ func (r *Reader) finishSparse(h *Header) {
 			h.Size = end
 		}
 	}
+}
+
+// captureStream reads the current stream's bytes into *dst unless the reader
+// is in header-only mode, in which case the bytes are skipped (and *dst stays
+// nil). Named-stream callers pass the address of the target Header field.
+func (r *Reader) captureStream(h *Header, dst *[]byte) error {
+	if r.headerOnly {
+		return r.skipCurrentStream()
+	}
+	b, err := r.readStreamBytes(r.streamLen)
+	if err != nil {
+		return err
+	}
+	*dst = b
+	return nil
+}
+
+// captureExtra reads the current stream's bytes into the generic Streams
+// bucket on h, preserving its type code. In header-only mode the bytes are
+// skipped and nothing is appended.
+func (r *Reader) captureExtra(h *Header) error {
+	if r.headerOnly {
+		return r.skipCurrentStream()
+	}
+	b, err := r.readStreamBytes(r.streamLen)
+	if err != nil {
+		return err
+	}
+	h.Streams = append(h.Streams, StreamData{Type: r.streamType, Data: b})
+	return nil
+}
+
+// skipCurrentStream advances past the remaining bytes of the current stream
+// without allocating or returning them.
+func (r *Reader) skipCurrentStream() error {
+	if rem := r.streamLen - r.streamDid; rem > 0 {
+		if err := r.skipStreamData(rem); err != nil {
+			return err
+		}
+		r.streamDid = r.streamLen
+	}
+	r.wrapFlbread()
+	return nil
 }
 
 // readStreamBytes reads exactly n bytes of the current stream's data into a

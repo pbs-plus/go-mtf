@@ -175,6 +175,77 @@ func TestMaterializeFileMetadataAndContent(t *testing.T) {
 	}
 }
 
+// TestExtraStreamsCaptured verifies that streams without a named Header field
+// (NTOI before STAN, CSUM after STAN) are preserved in Header.Streams instead
+// of being dropped, and that the file content still reads correctly.
+func TestExtraStreamsCaptured(t *testing.T) {
+	objectID := []byte("OBJ-ID-12345678")
+	preCSUM := []byte("PRECSUM")
+	postCSUM := []byte("POSTCSUM")
+	content := bytes.Repeat([]byte("Z"), 400)
+	file := buildFileWithStreams("f.bin",
+		streamDescriptor(StreamNTOI, objectID),
+		streamDescriptor(StreamCSUM, preCSUM),
+		streamDescriptor(StreamSTAN, content),
+		streamDescriptor(StreamCSUM, postCSUM),
+	)
+	r := NewReader(bytes.NewReader(streamArchive(file)))
+	h := nextOfType(r, EntryFile)
+
+	if got := readAll(t, r); !bytes.Equal(got, content) {
+		t.Fatalf("content mismatch: got %d bytes, want %d", len(got), len(content))
+	}
+
+	// Pre-STAN and post-STAN extra streams must both be captured.
+	var ntoi, csums []byte
+	for _, s := range h.Streams {
+		if s.Type == StreamNTOI {
+			ntoi = s.Data
+		}
+		if s.Type == StreamCSUM {
+			csums = append(csums, s.Data...)
+		}
+	}
+	if !bytes.Equal(ntoi, objectID) {
+		t.Errorf("NTOI = %q, want %q", ntoi, objectID)
+	}
+	if want := append(append([]byte(nil), preCSUM...), postCSUM...); !bytes.Equal(csums, want) {
+		t.Errorf("CSUM streams = %q, want %q", csums, want)
+	}
+}
+
+// TestHeaderOnlySkipsStreamData verifies that in header-only mode the stream
+// bytes are not materialized (Streams is nil) while the file still parses and
+// reads back correctly when not in header-only mode.
+func TestHeaderOnlySkipsStreamData(t *testing.T) {
+	content := bytes.Repeat([]byte("Q"), 500)
+	file := buildFileWithStreams("f.bin",
+		streamDescriptor(StreamNTOI, []byte("OBJ")),
+		streamDescriptor(StreamSTAN, content),
+		streamDescriptor(StreamCSUM, []byte("C")),
+	)
+
+	build := func() *Reader { return NewReader(bytes.NewReader(streamArchive(file))) }
+
+	// header-only: Streams must be empty and content skipped without error.
+	r := build()
+	r.HeaderOnly()
+	h := nextOfType(r, EntryFile)
+	if len(h.Streams) != 0 {
+		t.Errorf("header-only Streams = %d entries, want 0", len(h.Streams))
+	}
+
+	// normal: extra streams captured and content readable.
+	r2 := build()
+	h2 := nextOfType(r2, EntryFile)
+	if len(h2.Streams) == 0 {
+		t.Errorf("normal Streams empty, want NTOI/CSUM captured")
+	}
+	if got := readAll(t, r2); !bytes.Equal(got, content) {
+		t.Errorf("content mismatch: got %d, want %d", len(got), len(content))
+	}
+}
+
 func TestMaterializeAdvancesAcrossEntries(t *testing.T) {
 	content := []byte("ABC")
 	file1 := buildFileWithStreams("a.txt", streamDescriptor(StreamSTAN, content))
