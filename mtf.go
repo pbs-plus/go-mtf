@@ -46,7 +46,10 @@ const (
 )
 
 // Header describes a single entry (file, directory or volume) within an MTF
-// archive. It is returned by [Reader.Next].
+// archive. It is returned by [Reader.Next] via [Block.Header]. A single Header
+// is reused across entries, so its fields are overwritten on the next call to
+// Next; callers that retain an entry across iterations must copy the fields
+// they need.
 type Header struct {
 	// Type is the kind of entry.
 	Type EntryType
@@ -224,9 +227,9 @@ type ESetInfo struct {
 }
 
 // Block is a single structural element yielded by [Reader.Next]. Its Kind
-// discriminates which field is populated. The non-entry fields (Tape, Set,
-// ESet, Catalog) reference shared reader state and are overwritten on the next
-// call to Next; callers should copy any values they need to retain.
+// discriminates which field is populated. A single Block (and Header) are
+// reused across calls to Next, so all fields are overwritten on the next call;
+// callers should copy any values they need to retain.
 type Block struct {
 	Kind    BlockKind
 	Tape    *TapeInfo // populated when Kind == KindMedia

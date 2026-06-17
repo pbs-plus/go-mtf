@@ -20,7 +20,7 @@ import (
 type result struct {
 	path string
 	size int64
-	c    *mtf.Census
+	c    mtf.Census
 	err  error
 }
 

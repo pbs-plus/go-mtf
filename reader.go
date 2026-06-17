@@ -62,12 +62,30 @@ type Reader struct {
 	// as Compressed/Encrypted/Sparse remain accurate.
 	headerOnly bool
 
-	tape *TapeInfo
-	set  *SetInfo
+	strU16     []uint16 // reusable UTF-16 decode buffer (decodeStringInto)
+	strBuf     []byte   // reusable byte buffer for the entry Name path (joinPathDecode/joinPathInto)
+	scratchBuf []byte   // reusable byte buffer for other decoded strings (decodeStringInto ASCII path)
+
+	block  Block  // reused across Next calls (returned by pointer)
+	header Header // reused across entries; block.Header points here
+
+	// reusable slice backing arrays for Header metadata fields. Reset to
+	// length 0 (keeping capacity) at the start of each entry; avoids
+	// reallocating per file.
+	secBuf  []byte         // SecurityDescriptor backing array
+	eaBuf   []byte         // ExtendedAttributes backing array
+	streams []StreamData   // Streams backing array
+	sparses []SparseExtent // SparseExtents backing array
+
+	tape TapeInfo
+	set  SetInfo
+	eset ESetInfo
+
+	hasTape bool
+	hasSet  bool
+	hasEset bool
 
 	sawESET bool
-
-	eset *ESetInfo
 
 	corrupt uint32
 
@@ -104,10 +122,12 @@ func NewReader(r io.Reader) *Reader {
 // HeaderOnly puts the reader into header-only mode: metadata stream *data*
 // (NTFS security descriptors, extended attributes, sparse maps) is skipped
 // rather than read into [Header] fields, and standard (STAN) file content is
-// never delivered. Block and stream *headers* are still parsed, so entry names,
-// sizes and flags remain accurate. Combined with a seekable source this lets a
-// caller walk a cartridge reading essentially only headers, minimizing both
-// I/O and allocations. It is used by [Reader.Census].
+// never delivered. Entry *names* are also skipped (Header.Name is left empty)
+// since string construction is the dominant per-entry allocation; block and
+// stream *headers* are still parsed, so sizes and flags remain accurate.
+// Combined with a seekable source this lets a caller walk a cartridge reading
+// essentially only headers, with zero per-entry allocations. It is used by
+// [Reader.Census].
 func (r *Reader) HeaderOnly() { r.headerOnly = true }
 
 // SetDecryptor registers a callback used to decrypt encrypted data streams
@@ -116,6 +136,62 @@ func (r *Reader) HeaderOnly() { r.headerOnly = true }
 // stream is encrypted and no decryptor is registered, [Read] returns
 // [ErrEncrypted].
 func (r *Reader) SetDecryptor(d Decryptor) { r.decryptor = d }
+
+// resetHeader clears the reusable Header for the next entry. Slice fields are
+// truncated to length zero while retaining their backing arrays, so subsequent
+// appends reuse storage rather than allocating. Scalar fields are zeroed by
+// the caller reassigning them.
+func (r *Reader) resetHeader() {
+	h := &r.header
+	*h = Header{
+		SecurityDescriptor: r.secBuf[:0],
+		ExtendedAttributes: r.eaBuf[:0],
+		Streams:            r.streams[:0],
+		SparseExtents:      r.sparses[:0],
+	}
+}
+
+// setBlock populates the reusable Block for a non-entry kind and returns it.
+// The entry case uses [Reader.entryBlock].
+func (r *Reader) setBlock(kind BlockKind) *Block {
+	b := &r.block
+	b.Kind = kind
+	b.Header = nil
+	if r.hasTape {
+		b.Tape = &r.tape
+	} else {
+		b.Tape = nil
+	}
+	if r.hasSet {
+		b.Set = &r.set
+	} else {
+		b.Set = nil
+	}
+	if r.hasEset {
+		b.ESet = &r.eset
+	} else {
+		b.ESet = nil
+	}
+	if kind == KindSetEnd {
+		b.Catalog = r.Catalog()
+	} else {
+		b.Catalog = nil
+	}
+	return b
+}
+
+// entryBlock populates the reusable Block for an entry and returns it. The
+// Header is the Reader's reusable header, populated by the parse functions.
+func (r *Reader) entryBlock() *Block {
+	b := &r.block
+	b.Kind = KindEntry
+	b.Header = &r.header
+	b.Tape = nil
+	b.Set = nil
+	b.ESet = nil
+	b.Catalog = nil
+	return b
+}
 
 // Close closes the underlying reader if it was opened by Open.
 func (r *Reader) Close() error {
@@ -127,11 +203,21 @@ func (r *Reader) Close() error {
 
 // Tape returns metadata from the most recent TAPE descriptor block, or nil if
 // none has been encountered yet.
-func (r *Reader) Tape() *TapeInfo { return r.tape }
+func (r *Reader) Tape() *TapeInfo {
+	if !r.hasTape {
+		return nil
+	}
+	return &r.tape
+}
 
 // Set returns metadata from the current (most recent) start-of-data-set block,
 // or nil if none has been encountered yet.
-func (r *Reader) Set() *SetInfo { return r.set }
+func (r *Reader) Set() *SetInfo {
+	if !r.hasSet {
+		return nil
+	}
+	return &r.set
+}
 
 // Position reports the byte offset already consumed from the underlying
 // stream. It is intended for diagnostics and for building seek indexes for
@@ -209,15 +295,33 @@ func (r *Reader) readFull(p []byte) (int, error) {
 func (r *Reader) ensure(n int) error {
 	for len(r.blk) < n {
 		want := n - len(r.blk)
-		buf := r.scratch[:]
-		if want > len(buf) {
-			buf = make([]byte, want)
-		} else {
-			buf = buf[:want]
+		if want <= len(r.scratch) {
+			// Common case: read into the fixed scratch buffer and append.
+			buf := r.scratch[:want]
+			nr, err := r.read(buf)
+			if nr > 0 {
+				r.blk = append(r.blk, buf[:nr]...)
+				r.flbread += uint32(nr)
+				r.abspos += int64(nr)
+			}
+			if err != nil {
+				if len(r.blk) >= n {
+					return nil
+				}
+				if errors.Is(err, io.EOF) {
+					return io.ErrUnexpectedEOF
+				}
+				return err
+			}
+			continue
 		}
-		nr, err := r.read(buf)
+		// Large read: extend blk directly and read into the new tail to avoid a
+		// temporary buffer allocation.
+		pre := len(r.blk)
+		r.blk = append(r.blk, make([]byte, want)...)[:pre]
+		nr, err := r.read(r.blk[pre : pre+want])
+		r.blk = r.blk[:pre+nr]
 		if nr > 0 {
-			r.blk = append(r.blk, buf[:nr]...)
 			r.flbread += uint32(nr)
 			r.abspos += int64(nr)
 		}
@@ -489,7 +593,7 @@ func (r *Reader) Next() (*Block, error) {
 			if err := r.scanNext(); err != nil {
 				return nil, r.endOrError(err)
 			}
-			return &Block{Kind: KindMedia, Tape: r.tape}, nil
+			return r.setBlock(KindMedia), nil
 		case dbSSET:
 			if err := r.parseSet(); err != nil {
 				return nil, err
@@ -497,7 +601,7 @@ func (r *Reader) Next() (*Block, error) {
 			if err := r.scanNext(); err != nil {
 				return nil, r.endOrError(err)
 			}
-			return &Block{Kind: KindSet, Set: r.set}, nil
+			return r.setBlock(KindSet), nil
 		case dbESET:
 			r.sawESET = true
 			if err := r.parseEset(); err != nil {
@@ -512,7 +616,7 @@ func (r *Reader) Next() (*Block, error) {
 			if err := r.scanNext(); err != nil {
 				return nil, r.endOrError(err)
 			}
-			return &Block{Kind: KindSetEnd, ESet: r.eset, Catalog: r.Catalog()}, nil
+			return r.setBlock(KindSetEnd), nil
 		case dbEOTM:
 			// End of medium between entries: switch to the continuation medium,
 			// whose leading TAPE block will be exposed as the next KindMedia.
@@ -539,7 +643,7 @@ func (r *Reader) Next() (*Block, error) {
 				if err := r.beginEntry(h); err != nil {
 					return nil, r.endOrError(err)
 				}
-				return &Block{Kind: KindEntry, Header: h}, nil
+				return r.entryBlock(), nil
 			}
 		case dbDIRB:
 			if u32(r.blk, dbAttrOff)&AttrContinuation != 0 {
@@ -555,7 +659,7 @@ func (r *Reader) Next() (*Block, error) {
 				if err := r.beginEntry(h); err != nil {
 					return nil, r.endOrError(err)
 				}
-				return &Block{Kind: KindEntry, Header: h}, nil
+				return r.entryBlock(), nil
 			}
 
 		case dbFILE:
@@ -583,7 +687,7 @@ func (r *Reader) Next() (*Block, error) {
 			} else {
 				r.entryDone = false
 			}
-			return &Block{Kind: KindEntry, Header: h}, nil
+			return r.entryBlock(), nil
 
 		default:
 			// unknown or empty (dead) block: skip and continue
@@ -825,14 +929,15 @@ func (r *Reader) stringAt(size, pos uint16, sep byte) (string, error) {
 	if err := r.ensure(int(pos) + int(size)); err != nil {
 		return "", err
 	}
-	return decodeString(r.blk, int(pos), int(size), r.strType, sep), nil
+	return r.decodeStringInto(r.blk, int(pos), int(size), r.strType, sep), nil
 }
 
 func (r *Reader) parseTape() error {
 	if err := r.ensure(tapeCTimeOff + 6); err != nil {
 		return err
 	}
-	t := &TapeInfo{
+	t := &r.tape
+	*t = TapeInfo{
 		MFMID:                 u32(r.blk, tapeMFMIDOff),
 		Attributes:            u32(r.blk, tapeAttrOff),
 		Sequence:              u16(r.blk, tapeSeqOff),
@@ -865,7 +970,8 @@ func (r *Reader) parseTape() error {
 			return err
 		}
 	}
-	r.tape = t
+	r.tape = *t
+	r.hasTape = true
 	return nil
 }
 
@@ -873,7 +979,8 @@ func (r *Reader) parseSet() error {
 	if err := r.ensure(ssetCatVerOff + 1); err != nil {
 		return err
 	}
-	s := &SetInfo{
+	s := &r.set
+	*s = SetInfo{
 		Number:           u16(r.blk, ssetNumOff),
 		PBA:              u64(r.blk, ssetPBAOff),
 		SoftwareVendorID: u16(r.blk, ssetVendorOff),
@@ -907,7 +1014,8 @@ func (r *Reader) parseSet() error {
 			return err
 		}
 	}
-	r.set = s
+	r.set = *s
+	r.hasSet = true
 	return nil
 }
 
@@ -916,39 +1024,46 @@ func (r *Reader) parseVolb() (*Header, error) {
 		return nil, err
 	}
 	var device string
-	if sz, po := tapepos(r.blk, volbDeviceOff); sz > 0 {
-		var err error
-		if device, err = r.stringAt(sz, po, '/'); err != nil {
-			return nil, err
+	if !r.headerOnly {
+		if sz, po := tapepos(r.blk, volbDeviceOff); sz > 0 {
+			var err error
+			if device, err = r.stringAt(sz, po, '/'); err != nil {
+				return nil, err
+			}
 		}
 	}
 	r.volume = device
 	r.cwd = ""
 	r.cwdID = 0
 
-	h := &Header{
-		Type:            EntryVolume,
-		Name:            device,
-		Volume:          device,
-		Attributes:      u32(r.blk, volbAttrOff),
-		BlockAttributes: u32(r.blk, dbAttrOff),
-		OSID:            u8(r.blk, dbOSIDOff),
-		DisplayableSize: u64(r.blk, dbSizeOff),
-		CreateTime:      decodeDateTime(r.blk, volbCTimeOff),
-		ModTime:         decodeDateTime(r.blk, volbCTimeOff),
+	r.resetHeader()
+	h := &r.header
+	h.Type = EntryVolume
+	h.Volume = r.volume
+	if !r.headerOnly {
+		h.Name = device
+		h.Volume = device
 	}
+	h.Attributes = u32(r.blk, volbAttrOff)
+	h.BlockAttributes = u32(r.blk, dbAttrOff)
+	h.OSID = u8(r.blk, dbOSIDOff)
+	h.DisplayableSize = u64(r.blk, dbSizeOff)
+	h.CreateTime = decodeDateTime(r.blk, volbCTimeOff)
+	h.ModTime = decodeDateTime(r.blk, volbCTimeOff)
 	var err error
-	if sz, po := tapepos(r.blk, volbVolumeOff); sz > 0 {
-		if h.VolumeLabel, err = r.stringAt(sz, po, '/'); err != nil {
-			return nil, err
+	if !r.headerOnly {
+		if sz, po := tapepos(r.blk, volbVolumeOff); sz > 0 {
+			if h.VolumeLabel, err = r.stringAt(sz, po, '/'); err != nil {
+				return nil, err
+			}
+		}
+		if sz, po := tapepos(r.blk, volbMachineOff); sz > 0 {
+			if h.MachineName, err = r.stringAt(sz, po, '/'); err != nil {
+				return nil, err
+			}
 		}
 	}
-	if sz, po := tapepos(r.blk, volbMachineOff); sz > 0 {
-		if h.MachineName, err = r.stringAt(sz, po, '/'); err != nil {
-			return nil, err
-		}
-	}
-	if r.set != nil {
+	if r.hasSet {
 		h.SetNumber = r.set.Number
 	}
 	return h, nil
@@ -959,7 +1074,7 @@ func (r *Reader) parseDirb() (*Header, error) {
 		return nil, err
 	}
 	attr := u32(r.blk, dirbAttrOff)
-	if attr&0x20000 == 0 {
+	if attr&0x20000 == 0 && !r.headerOnly {
 		if sz, po := tapepos(r.blk, dirbNameOff); sz > 0 {
 			name, err := r.stringAt(sz, po, '/')
 			if err != nil {
@@ -971,21 +1086,23 @@ func (r *Reader) parseDirb() (*Header, error) {
 	}
 	// else: path encoded in a stream; keep the previous cwd.
 
-	h := &Header{
-		Type:            EntryDirectory,
-		Name:            joinPath(r.volume, r.cwd),
-		Volume:          r.volume,
-		Attributes:      attr,
-		BlockAttributes: u32(r.blk, dbAttrOff),
-		OSID:            u8(r.blk, dbOSIDOff),
-		DisplayableSize: u64(r.blk, dbSizeOff),
-		ModTime:         decodeDateTime(r.blk, dirbMTimeOff),
-		CreateTime:      decodeDateTime(r.blk, dirbCTimeOff),
-		BirthTime:       decodeDateTime(r.blk, dirbBTimeOff),
-		AccessTime:      decodeDateTime(r.blk, dirbATimeOff),
-		DirID:           r.cwdID,
+	r.resetHeader()
+	h := &r.header
+	h.Type = EntryDirectory
+	if !r.headerOnly {
+		h.Name = r.joinPathInto(r.volume, r.cwd)
 	}
-	if r.set != nil {
+	h.Volume = r.volume
+	h.Attributes = attr
+	h.BlockAttributes = u32(r.blk, dbAttrOff)
+	h.OSID = u8(r.blk, dbOSIDOff)
+	h.DisplayableSize = u64(r.blk, dbSizeOff)
+	h.ModTime = decodeDateTime(r.blk, dirbMTimeOff)
+	h.CreateTime = decodeDateTime(r.blk, dirbCTimeOff)
+	h.BirthTime = decodeDateTime(r.blk, dirbBTimeOff)
+	h.AccessTime = decodeDateTime(r.blk, dirbATimeOff)
+	h.DirID = r.cwdID
+	if r.hasSet {
 		h.SetNumber = r.set.Number
 	}
 	return h, nil
@@ -996,13 +1113,14 @@ func (r *Reader) parseEset() error {
 		return err
 	}
 	r.corrupt = u32(r.blk, esetCorruptOff)
-	r.eset = &ESetInfo{
+	r.eset = ESetInfo{
 		Attributes:       u32(r.blk, esetAttrOff),
 		CorruptObjects:   r.corrupt,
 		FDDMediaSequence: u16(r.blk, esetSeqOff),
 		SetNumber:        u16(r.blk, esetSetOff),
 		CreateTime:       decodeDateTime(r.blk, esetCTimeOff),
 	}
+	r.hasEset = true
 	return nil
 }
 
@@ -1051,37 +1169,48 @@ func (r *Reader) CorruptObjects() uint32 { return r.corrupt }
 // ESet returns metadata from the most recent end-of-data-set (ESET) block, or
 // nil if no data set has ended yet. The returned value is shared; callers must
 // not retain it across subsequent calls to [Reader.Next].
-func (r *Reader) ESet() *ESetInfo { return r.eset }
+func (r *Reader) ESet() *ESetInfo {
+	if !r.hasEset {
+		return nil
+	}
+	return &r.eset
+}
 
 func (r *Reader) parseFile() (*Header, error) {
 	if err := r.ensure(fileNameOff + 4); err != nil {
 		return nil, err
 	}
-	var name string
-	if sz, po := tapepos(r.blk, fileNameOff); sz > 0 {
-		var err error
-		if name, err = r.stringAt(sz, po, '/'); err != nil {
+	sz, po := tapepos(r.blk, fileNameOff)
+	if sz > 0 {
+		if err := r.ensure(int(po) + int(sz)); err != nil {
 			return nil, err
 		}
 	}
 	dirid := u32(r.blk, fileDirIDOff)
 
-	h := &Header{
-		Type:            EntryFile,
-		Name:            joinPath(r.volume, r.cwd, name),
-		Volume:          r.volume,
-		Attributes:      u32(r.blk, fileAttrOff),
-		BlockAttributes: u32(r.blk, dbAttrOff),
-		OSID:            u8(r.blk, dbOSIDOff),
-		DisplayableSize: u64(r.blk, dbSizeOff),
-		ModTime:         decodeDateTime(r.blk, fileMTimeOff),
-		CreateTime:      decodeDateTime(r.blk, fileCTimeOff),
-		BirthTime:       decodeDateTime(r.blk, fileBTimeOff),
-		AccessTime:      decodeDateTime(r.blk, fileATimeOff),
-		FileID:          u32(r.blk, fileIDOff),
-		DirID:           dirid,
+	r.resetHeader()
+	h := &r.header
+	h.Type = EntryFile
+	// Build the full path (volume/cwd prefix + file name) in one pass into the
+	// reusable buffer, decoding the raw file-name field directly to avoid an
+	// intermediate string allocation. Only the final string() allocates.
+	// In header-only mode the Name is not needed (classification uses only
+	// scalar fields and flags), so skip the string conversion entirely.
+	if !r.headerOnly {
+		h.Name = r.joinPathDecode(r.volume, r.cwd, sz, po)
 	}
-	if r.set != nil {
+	h.Volume = r.volume
+	h.Attributes = u32(r.blk, fileAttrOff)
+	h.BlockAttributes = u32(r.blk, dbAttrOff)
+	h.OSID = u8(r.blk, dbOSIDOff)
+	h.DisplayableSize = u64(r.blk, dbSizeOff)
+	h.ModTime = decodeDateTime(r.blk, fileMTimeOff)
+	h.CreateTime = decodeDateTime(r.blk, fileCTimeOff)
+	h.BirthTime = decodeDateTime(r.blk, fileBTimeOff)
+	h.AccessTime = decodeDateTime(r.blk, fileATimeOff)
+	h.FileID = u32(r.blk, fileIDOff)
+	h.DirID = dirid
+	if r.hasSet {
 		h.SetNumber = r.set.Number
 	}
 	return h, nil

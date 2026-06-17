@@ -488,3 +488,31 @@ func TestEntriesAreSorted(t *testing.T) {
 		t.Errorf("archive size = %d, want %d", len(data), 9*testFLBSize)
 	}
 }
+
+func TestAppendDecodeString(t *testing.T) {
+	// ASCII path: "hello" with trailing NUL.
+	ascii := []byte("hello\x00")
+	got := string(appendDecodeString(nil, ascii, 0, len(ascii), 1, '/'))
+	if got != "hello" {
+		t.Errorf("ascii = %q, want %q", got, "hello")
+	}
+
+	// UTF-16LE "hello" (strType bit0 clear) with trailing NUL.
+	u16 := []byte{'h', 0, 'e', 0, 'l', 0, 'l', 0, 'o', 0, 0, 0}
+	got = string(appendDecodeString(nil, u16, 0, len(u16), 0, '/'))
+	if got != "hello" {
+		t.Errorf("utf16 = %q, want %q", got, "hello")
+	}
+
+	// Empty / out-of-range.
+	got = string(appendDecodeString(nil, ascii, 0, 0, 1, '/'))
+	if got != "" {
+		t.Errorf("empty = %q, want empty", got)
+	}
+
+	// Append into existing dst (composing a path).
+	dst := appendDecodeString([]byte("vol/"), u16, 0, len(u16), 0, '/')
+	if string(dst) != "vol/hello" {
+		t.Errorf("append = %q, want %q", dst, "vol/hello")
+	}
+}

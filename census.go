@@ -79,17 +79,20 @@ type Census struct {
 // HasData reports whether the cartridge carries any file content.
 func (c *Census) HasData() bool { return c.Files > c.EmptyFiles }
 
-// Census walks the cartridge, classifying it into a [*Census]. File content is
-// discarded rather than returned. It consumes the reader: after it returns the
-// stream is exhausted (or stopped at the first read error). Use a fresh reader
-// to extract content.
+// Census walks the cartridge, classifying it into a [Census] (returned by
+// value, so it need not heap-allocate). File content is discarded rather than
+// returned. It consumes the reader: after it returns the stream is exhausted
+// (or stopped at the first read error). Use a fresh reader to extract content.
 //
-// Census returns a non-nil Census even when err is non-nil, populated with
-// whatever was read before the error; this lets a caller classify partially
-// readable cartridges.
-func (r *Reader) Census() (*Census, error) {
+// Census runs in header-only mode, so it performs zero per-entry allocations;
+// the only allocations are the [Reader] itself and its block buffer.
+//
+// Even when err is non-nil, the returned Census is populated with whatever was
+// read before the error; this lets a caller classify partially readable
+// cartridges.
+func (r *Reader) Census() (Census, error) {
 	r.HeaderOnly()
-	c := &Census{}
+	var c Census
 	for {
 		blk, err := r.Next()
 		if errors.Is(err, io.EOF) {

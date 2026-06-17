@@ -301,6 +301,34 @@ continuation is registered, an `EOTM` simply ends the archive (`io.EOF`).
   tar output. Sparse streams are not transparently expanded.
 - Dates are returned in the local time zone, matching the original tool.
 
+## Performance / allocations
+
+The reader is designed for near-zero-allocation hot paths.
+
+- A single `Block` and `Header` are **reused** across `Next()` calls (they are
+  overwritten each iteration); `TapeInfo`/`SetInfo`/`ESetInfo` are embedded
+  values, not per-block allocations.
+- String decoding (paths, volume labels) uses **reusable byte buffers**; a
+  file's full path is built in one pass and converted to a Go string exactly
+  once at the field.
+- `HeaderOnly()` mode skips both metadata-stream data **and** entry-name string
+  construction, so cartridge classification is **zero-allocation per entry**.
+  `Census()` runs in this mode and returns its result **by value**.
+- `Read()` fills the caller's buffer directly; stream data is never copied into
+  an intermediate library buffer.
+
+Benchmark (50-entry archive, go test -bench):
+
+```
+BenchmarkCensus        5760 B/op    5 allocs/op   # 2 library allocs (Reader + block buffer), rest is the test harness
+BenchmarkNextHeaderOnly 5760 B/op    5 allocs/op   # identical — zero per-entry
+BenchmarkNext           8736 B/op  209 allocs/op   # ~3/entry: name string + NACL/CSUM metadata bytes (legitimate output)
+```
+
+Callers that retain entries across `Next()` iterations should copy the fields
+they keep (e.g. `strings.Clone(h.Name)`), since the reused Header is
+overwritten on the next call.
+
 ## Command-line tool
 
 `cmd/mtftar` translates an MTF/BKF stream into a TAR stream, or lists its
