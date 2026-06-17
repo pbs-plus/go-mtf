@@ -55,6 +55,11 @@ type Reader struct {
 	mediaSeq  int                                   // number of continuation media consumed
 	peek      []byte                                // read-ahead bytes pending delivery (probe buffer)
 
+	// hitEOTM is set when an End-Of-Tape-Media marker is encountered but no
+	// continuation medium is registered, meaning the logical stream was
+	// truncated. Exposed via TruncatedByEOTM so callers can warn the user.
+	hitEOTM bool
+
 	// headerOnly skips the *data* of metadata streams (NACL/NTEA/SPAR) instead of
 	// reading them into the Header, and leaves STAN content undelivered. Set by
 	// [Reader.HeaderOnly]; used by [Reader.Census] for cheap, allocation-light
@@ -226,6 +231,13 @@ func (r *Reader) Position() int64 { return r.abspos }
 // medium supplied via [Reader.SetContinuation] is switched to. It is always 1
 // for non-spanned archives.
 func (r *Reader) MediaSequence() int { return r.mediaSeq + 1 }
+
+// TruncatedByEOTM reports whether the archive ended prematurely because an
+// End-Of-Tape-Media marker was reached without a continuation medium being
+// registered via [Reader.SetContinuation]. When true, the data set spans
+// further media that were not supplied, and the returned snapshot is
+// incomplete. Callers should warn the operator.
+func (r *Reader) TruncatedByEOTM() bool { return r.hitEOTM }
 
 // Family returns what is known about the media family from the current
 // cartridge. It combines the TAPE descriptor and the Set Map (if present) to
@@ -667,6 +679,7 @@ func (r *Reader) Next() (*Block, error) {
 			if r.switchMedium() {
 				continue
 			}
+			r.hitEOTM = true
 			return nil, io.EOF
 		case dbSFMB, dbESPB, dbCFIL:
 			// filemark / padding / corrupt-placeholder blocks: nothing to expose

@@ -124,6 +124,7 @@ func (r *Reader) switchMedium() bool {
 func (r *Reader) advanceToContinuationStream() error {
 	for {
 		if !r.switchMedium() {
+			r.hitEOTM = true
 			return io.EOF
 		}
 		if err := r.resyncContinuation(); err != nil {
