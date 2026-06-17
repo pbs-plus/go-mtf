@@ -591,6 +591,38 @@ func isDBLKHeader(b []byte) bool {
 	return false
 }
 
+// streamChecksumValid reports whether the 22-byte stream header at b[off]
+// carries a correct word-wise XOR checksum (bytes off..off+19 vs off+20). Per
+// the MTF spec ("Checksum" under MTF_STREAM_HDR) this verifies a valid stream
+// descriptor is being processed.
+func streamChecksumValid(b []byte, off int) bool {
+	if len(b) < off+streamHeaderSize {
+		return false
+	}
+	var sum uint16
+	for i := off; i < off+stChecksumOff; i += 2 {
+		sum ^= u16(b, i)
+	}
+	return sum == u16(b, off+stChecksumOff)
+}
+
+// probeStreamHeader returns the offset within b of the next stream header,
+// given that the stream data ended at the start of b and that aligned is the
+// 4-byte-alignment pad the spec mandates. Real writers always set the stream
+// checksum, so the header is whichever of the immediate position (offset 0) or
+// the aligned position validates. If neither validates the aligned position is
+// returned to preserve the historical 4-aligned assumption (some synthetic
+// fixtures omit checksums).
+func probeStreamHeader(b []byte, aligned uint32) uint32 {
+	if streamChecksumValid(b, 0) {
+		return 0
+	}
+	if aligned != 0 && streamChecksumValid(b, int(aligned)) {
+		return aligned
+	}
+	return aligned
+}
+
 // streamNext skips the remainder of the current stream's data and loads the
 // next stream header (4-byte aligned), unless the current stream was SPAD, in
 // which case lastStream is set.
@@ -606,17 +638,28 @@ func (r *Reader) streamNext() error {
 		return nil
 	}
 
-	// Load the next stream header. Stream headers are 4-byte aligned; the
-	// alignment padding is derived from flbread.
+	// Load the next stream header. Per the spec ("Stream Header"), stream
+	// headers begin on 4-byte boundaries and a valid header carries a
+	// word-wise XOR checksum. The stream data just consumed ends at the
+	// current reader position. Most writers pad the data so the next header
+	// lands on a 4-byte boundary, but some (notably Backup Exec) place the
+	// next header immediately at the data end with no alignment padding.
+	//
+	// Locate the header by probing with its checksum: read enough bytes to
+	// cover both the immediate position and the 4-aligned position, and use
+	// whichever validates. If neither validates (header without a checksum,
+	// as in some synthetic fixtures, or the natural end of the stream list)
+	// fall back to the spec's 4-aligned position so existing behaviour is
+	// preserved.
 	r.blk = r.blk[:0]
-	var pad uint32
+	var aligned uint32
 	if m := r.flbread % 4; m != 0 {
-		pad = 4 - m
+		aligned = 4 - m
 	}
-	r.streamOff = pad
-	if err := r.ensure(int(pad) + streamHeaderSize); err != nil {
+	if err := r.ensure(int(aligned) + streamHeaderSize); err != nil {
 		return err
 	}
+	r.streamOff = probeStreamHeader(r.blk, aligned)
 	r.readStreamHeader()
 	return nil
 }

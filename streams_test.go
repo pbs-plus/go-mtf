@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 )
@@ -107,6 +108,136 @@ func streamArchive(entries ...[]byte) []byte {
 	}
 	buf.Write(buildESET())
 	return buf.Bytes()
+}
+
+// streamDescriptorCksum emits a stream descriptor with a correct word-wise XOR
+// header checksum, matching what real writers (Backup Exec, ntbackup) record.
+// Real archives always set this checksum, and the reader's stream-location
+// logic relies on it to disambiguate the next header position.
+func streamDescriptorCksum(typ uint32, data []byte) []byte {
+	b := streamDescriptor(typ, data)
+	var sum uint16
+	for i := 0; i < stChecksumOff; i += 2 {
+		sum ^= uint16(b[i]) | uint16(b[i+1])<<8
+	}
+	putU16(b, stChecksumOff, int(sum))
+	return b
+}
+
+// streamDescriptorRaw lays out a stream descriptor with exact control over the
+// data length and whether trailing 4-byte alignment padding is added. It is
+// used to reproduce writer quirks (e.g. Backup Exec placing the next stream
+// header immediately at the data end without alignment padding).
+func streamDescriptorRaw(typ uint32, data []byte, pad bool) []byte {
+	total := streamHeaderSize + len(data)
+	if pad {
+		if m := total % 4; m != 0 {
+			total += 4 - m
+		}
+	}
+	b := make([]byte, total)
+	putU32(b, stTypeOff, typ)
+	putU64(b, stLengthOff, uint64(len(data)))
+	copy(b[streamHeaderSize:], data)
+	var sum uint16
+	for i := 0; i < stChecksumOff; i += 2 {
+		sum ^= uint16(b[i]) | uint16(b[i+1])<<8
+	}
+	putU16(b, stChecksumOff, int(sum))
+	return b
+}
+
+// TestVendorPadStreamThenSTAN reproduces a Backup Exec LTO tape layout where a
+// FILE block's first stream is an unknown vendor pad stream (the writer uses a
+// private 4-byte type, not a spec-defined SPAD) whose data length is chosen so
+// the following real data stream (STAN) begins at a *non*-4-byte-aligned
+// offset. The spec mandates 4-byte-aligned stream headers, but Backup Exec
+// places the next header immediately at the data end with no alignment padding.
+// The reader must locate the STAN via its checksum rather than assuming the
+// aligned position, otherwise it desyncs into the file data.
+func TestVendorPadStreamThenSTAN(t *testing.T) {
+	const vendorPad uint32 = 0x44415043 // "CPAD" - Backup Exec private pad stream
+	fileData := []byte("MP3-CONTENT")
+
+	// Pad-stream data length is even but not 4-aligned (no trailing pad), so the
+	// following STAN header lands at an offset that is 2 mod 4.
+	padStream := streamDescriptorRaw(vendorPad, make([]byte, 6), false)
+	stan := streamDescriptorCksum(StreamSTAN, fileData)
+
+	arc := streamArchive(buildFileWithStreams("song.mp3", padStream, stan))
+	r := NewReader(bytes.NewReader(arc))
+	var sawFile bool
+	for {
+		b, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("walk desynced: %v", err)
+		}
+		if b.Kind == KindEntry && b.Header.Type == EntryFile {
+			sawFile = true
+			if !strings.HasSuffix(b.Header.Name, "song.mp3") {
+				t.Errorf("name = %q, want suffix song.mp3", b.Header.Name)
+			}
+			if b.Header.Size != int64(len(fileData)) {
+				t.Errorf("size = %d, want %d", b.Header.Size, len(fileData))
+			}
+		}
+	}
+	if !sawFile {
+		t.Fatal("file entry not found; reader likely desynced on the pad stream")
+	}
+}
+
+// TestStreamLessPackedDBLK reproduces a Backup Exec data set where the
+// structural DBLKs (SSET/VOLB/DIRB) carry no data streams and their Offset To
+// First Event points at the next DBLK in the packed descriptor block, per the
+// MTF spec ("Offset To First Event"). The reader must recognise the next bytes
+// as a DBLK header and treat the current block as stream-less rather than
+// trying to parse the next DBLK as a stream.
+func TestStreamLessPackedDBLK(t *testing.T) {
+	// Build SSET/VOLB/DIRB packed at FLB boundaries with dbOff pointing to the
+	// next DBLK (no SPAD), then a normal FILE with a STAN the reader extracts.
+	const flb = testFLBSize
+	sset := buildSSET()
+	putU16(sset, dbOffOff, flb) // points at VOLB
+	volb := buildVOLB("D:")
+	putU16(volb, dbOffOff, flb) // points at DIRB
+	dirb := buildDirbWithStreams(1, "dir")
+	putU16(dirb, dbOffOff, flb) // points at FILE
+
+	content := []byte("hello")
+	file := buildFileWithStreams("f.txt", streamDescriptorCksum(StreamSTAN, content))
+
+	var buf bytes.Buffer
+	buf.Write(buildTape())
+	buf.Write(sset)
+	buf.Write(volb)
+	buf.Write(dirb)
+	buf.Write(file)
+	buf.Write(buildESET())
+
+	r := NewReader(bytes.NewReader(buf.Bytes()))
+	var gotFile bool
+	for {
+		b, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("walk desynced on packed stream-less DBLKs: %v", err)
+		}
+		if b.Kind == KindEntry && b.Header.Type == EntryFile {
+			gotFile = true
+			if !strings.HasSuffix(b.Header.Name, "f.txt") {
+				t.Errorf("name = %q, want suffix f.txt", b.Header.Name)
+			}
+		}
+	}
+	if !gotFile {
+		t.Fatal("file after stream-less packed DBLKs not reached")
+	}
 }
 
 // nextOfType advances r until it returns an entry of the given type.
