@@ -33,6 +33,9 @@ type Reader struct {
 	lastStream      bool   // a SPAD stream has been seen (end of object streams)
 	streamContinued bool   // current data stream is a cross-media continuation
 
+	decryptor Decryptor // optional cipher for encrypted streams (§6.5)
+	dec       *decoder  // active compressed/encrypted-stream decoder
+
 	cur       *Header
 	inData    bool  // positioned within the file's STAN data stream
 	dataRem   int64 // remaining bytes of the file's STAN data
@@ -106,6 +109,13 @@ func NewReader(r io.Reader) *Reader {
 // caller walk a cartridge reading essentially only headers, minimizing both
 // I/O and allocations. It is used by [Reader.Census].
 func (r *Reader) HeaderOnly() { r.headerOnly = true }
+
+// SetDecryptor registers a callback used to decrypt encrypted data streams
+// (§6.5). The MTF specification defines no data-encryption cipher, so the
+// algorithm is vendor-specific; supply a Decryptor matching the writer. If a
+// stream is encrypted and no decryptor is registered, [Read] returns
+// [ErrEncrypted].
+func (r *Reader) SetDecryptor(d Decryptor) { r.decryptor = d }
 
 // Close closes the underlying reader if it was opened by Open.
 func (r *Reader) Close() error {
@@ -453,6 +463,7 @@ func (r *Reader) Next() (*Block, error) {
 	r.sparseIdx = 0
 	r.sparsePos = 0
 	r.sparseCursor = 0
+	r.dec = nil
 
 	r.dataRem = 0
 
@@ -765,6 +776,22 @@ func (r *Reader) Read(p []byte) (int, error) {
 				return nr, ferr
 			}
 			err = io.EOF
+		}
+		return nr, err
+	}
+
+	// Compressed/encrypted stream: serve decoded bytes from the frame decoder.
+	if r.dec != nil {
+		nr, err := r.dec.Read(p)
+		if err == io.EOF {
+			r.inData = false
+			if ferr := r.finishEntry(); ferr != nil {
+				return nr, ferr
+			}
+			if nr == 0 {
+				return 0, io.EOF
+			}
+			err = nil
 		}
 		return nr, err
 	}

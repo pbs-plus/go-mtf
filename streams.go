@@ -50,6 +50,19 @@ func (r *Reader) materializeStreams(h *Header) error {
 			if r.streamSysAttr&StreamFSSparse != 0 && r.streamLen == 0 {
 				h.Sparse = true
 				r.sparse = true
+			} else if h.Compressed || h.Encrypted {
+				// Stream data is wrapped in compression/encryption frame headers
+				// (MTF spec 6.4/6.5). Decode lazily as the caller reads; the raw
+				// stream length is what the frame reader must consume.
+				r.inData = true
+				r.dataRem = r.streamLen
+				r.dec = newDecoder(r, h.Encrypted, h.Compressed, r.streamLen)
+				// The logical (uncompressed) size is the descriptor's Displayable
+				// Size for compressed/encrypted objects.
+				if h.DisplayableSize != 0 {
+					h.Size = int64(h.DisplayableSize)
+				}
+				return nil
 			} else {
 				r.inData = true
 				r.dataRem = r.streamLen

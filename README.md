@@ -126,6 +126,51 @@ STAN (e.g. the data checksum) are appended as the content is read. In
 `Read` (spanning-aware); only the small metadata streams are buffered into
 the `Header`.
 
+### Compression & encryption (Tier 4)
+
+The MTF spec defines a single software compression algorithm, `MTF_LZS221`
+(`0x0ABE`, Stac LZS, ANSI X3.241-1994). When a file's standard data stream
+(STAN) carries the `STREAM_COMPRESSED` bit, `Read` transparently reverses it:
+the raw stream is a sequence of 24-byte Compression Frame Headers
+(`MTF_CMP_HDR`, §6.4.1), each wrapping an independently-decompressed LZS block,
+and the reader peels the frames and yields the original bytes. The
+anti-expansion case (data stored uncompressed inside a frame when compression
+would expand it) is handled.
+
+```go
+for {
+	b, err := r.Next()
+	if err == io.EOF { break }
+	if b.Kind == mtf.KindEntry && b.Header.Type == mtf.EntryFile {
+		io.Copy(out, r) // decompressed transparently if b.Header.Compressed
+	}
+}
+```
+
+`Header.Compressed`/`Header.Encrypted` report the flags; `Header.Size` is the
+logical (uncompressed) size; `Header.CompressionAlgorithm`/`Header.EncryptionAlgorithm`
+carry the registered IDs.
+
+The MTF spec defines **no data-encryption cipher** ("Data Encryption has not
+been defined", Appendix D) — only the 24-byte `MTF_ENC_HDR` frame layout and MD5
+password *hashing*. So encrypted streams are decoded through a caller-supplied
+decryptor. Register one matching the writer's vendor-specific cipher; without
+one, `Read` of an encrypted stream returns `mtf.ErrEncrypted`:
+
+```go
+r.SetDecryptor(func(algo uint16, ct []byte) ([]byte, error) {
+	// algo == b.Header.EncryptionAlgorithm; vendor-specific cipher here.
+	return myDecipher(algo, ct)
+})
+```
+
+When a stream is both compressed and encrypted, data was compressed first then
+encrypted, so the reader decrypts each frame then decompresses it.
+
+> Note: the production dataset contains no compressed or encrypted files, so
+> LZS is validated via Go round-trip (compress→decompress) and synthetic frame
+> tests; real BE/NTBackup samples would be needed for final confirmation.
+
 ### Checksum verification
 
 `Reader.VerifyChecksum()` validates the MTF common-block header (`MTF_DB_HDR`)
