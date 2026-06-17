@@ -442,4 +442,10 @@ func TestSpanningNoContinuation(t *testing.T) {
 			}
 		}
 	}
+
+	// The reader must signal that the archive was truncated by an
+	// unhandled EOTM so callers can warn the operator.
+	if !r.TruncatedByEOTM() {
+		t.Errorf("TruncatedByEOTM = false, want true (EOTM hit without continuation)")
+	}
 }
