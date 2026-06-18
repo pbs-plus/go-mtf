@@ -21,16 +21,16 @@ const (
 	streamHeaderSize = 22 // size of a stream descriptor header
 )
 
-// DB field offsets, per block type (offsets beyond the 48-byte common header).
+// DB field offsets, per block type (offsets beyond the 52-byte common header).
 
 // TAPE
 const (
-	tapeMFMIDOff    = 48
-	tapeAttrOff     = 54
-	tapeSeqOff      = 58
-	tapeEncryptOff  = 60
-	tapeSFMSizeOff  = 62
-	tapeCatTypeOff  = 64
+	tapeMFMIDOff    = 52
+	tapeAttrOff     = 56
+	tapeSeqOff      = 60
+	tapeEncryptOff  = 62
+	tapeSFMSizeOff  = 64
+	tapeCatTypeOff  = 66
 	tapeNameOff     = 68
 	tapeLabelOff    = 72
 	tapePasswdOff   = 76
