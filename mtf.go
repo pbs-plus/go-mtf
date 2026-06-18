@@ -79,8 +79,10 @@ type Header struct {
 	// constants; this is the source [Header.UnixMode] derives its mode from.
 	WinAttributes uint32
 	// NTFileFlags is the Windows NT file-specific flags from the OS-specific
-	// data section of a FILE DBLK (OSID 14). It is zero for non-NT entries.
-	// Test individual bits with the [NTFile] constants.
+	// data section of a FILE DBLK (OS ID 14, OS Version 1, spec Structure 43
+	// offset 8). It is zero for non-NT entries, for OS Version 0 (Structure 40,
+	// where offset 8 is Reserved) and for non-FILE blocks (DIRB Structure 42 has
+	// no such field). Test individual bits with the [NTFile] constants.
 	NTFileFlags uint32
 	// BlockAttributes is the MTF_DB_HDR common Block Attributes field, which
 	// carries bits such as MTF_CONTINUATION and MTF_COMPRESSION. Use the

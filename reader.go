@@ -1280,9 +1280,9 @@ func (r *Reader) parseDirb() (*Header, error) {
 	h.Attributes = attr
 	h.BlockAttributes = u32(r.blk, dbAttrOff)
 	h.OSID = u8(r.blk, dbOSIDOff)
-	// Parse Windows NT OS-specific data (OS ID 14, spec Structure 42): the
-	// dwFileAttributes at offset 0 and the NT File Flags at offset 8.
-	if win, flags, ok := r.loadNTOSData(); ok {
+	// Parse Windows NT OS-specific data (OS ID 14, spec Structure 42): only the
+	// dwFileAttributes at offset 0; DIRB carries no NT File Flags field.
+	if win, flags, ok := r.loadNTOSData(false); ok {
 		h.WinAttributes = win
 		h.NTFileFlags = flags
 	}
@@ -1392,8 +1392,9 @@ func (r *Reader) parseFile() (*Header, error) {
 	h.BlockAttributes = u32(r.blk, dbAttrOff)
 	h.OSID = u8(r.blk, dbOSIDOff)
 	// Parse Windows NT OS-specific data (OS ID 14, spec Structure 43): the
-	// dwFileAttributes at offset 0 and the NT File Flags at offset 8.
-	if win, flags, ok := r.loadNTOSData(); ok {
+	// dwFileAttributes at offset 0 and (for OS Version 1) the NT File Flags at
+	// offset 8.
+	if win, flags, ok := r.loadNTOSData(true); ok {
 		h.WinAttributes = win
 		h.NTFileFlags = flags
 	}

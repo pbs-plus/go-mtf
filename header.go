@@ -137,10 +137,15 @@ func tapepos(b []byte, off int) (size, pos uint16) {
 func blockType(b []byte) [4]byte { return [4]byte{b[0], b[1], b[2], b[3]} }
 
 // ntOSData parses the Windows NT OS-specific data area of a descriptor block
-// (OS ID 14, spec Structures 42/43). It returns the dwFileAttributes (offset
-// 0 of the OS-specific area) and the NT File Flags (offset 8). ok is false when
-// the block is not NT or the OS-specific area is too short.
-func ntOSData(b []byte) (winAttr, ntFlags uint32, ok bool) {
+// (OS ID 14, spec Appendix A). It returns the dwFileAttributes (offset 0 of
+// the OS-specific area, valid for every NT version and DBLK type — Structures
+// 39/40/42/43) and the NT File Flags (offset 8, which exists ONLY in a FILE
+// block at OS Version 1, spec Structure 43 / Table 28). At OS Version 0 the
+// FILE OS-data layout (Structure 40) has a Reserved UINT16 at offset 8, so it
+// must not be read as file flags; a DIRB block (Structures 39/42) never carries
+// NT File Flags regardless of version or area size. ok is false when the block
+// is not NT or the OS-specific area is too short.
+func ntOSData(b []byte, fileBlock bool) (winAttr, ntFlags uint32, ok bool) {
 	if u8(b, dbOSIDOff) != 14 {
 		return 0, 0, false
 	}
@@ -149,7 +154,10 @@ func ntOSData(b []byte) (winAttr, ntFlags uint32, ok bool) {
 	if osSize >= 4 && base+4 <= len(b) {
 		winAttr = u32(b, base)
 	}
-	if osSize >= 12 && base+12 <= len(b) {
+	// NT File Flags (Table 28) exist only in a FILE block at OS Version 1
+	// (Structure 43, offset 8). OS Version 0 (Structure 40) has a Reserved
+	// UINT16 at offset 8, and DIRB (Structures 39/42) has no such field at all.
+	if fileBlock && u8(b, dbOSVerOff) == 1 && osSize >= 12 && base+12 <= len(b) {
 		ntFlags = u32(b, base+8)
 	}
 	return winAttr, ntFlags, true
@@ -157,10 +165,11 @@ func ntOSData(b []byte) (winAttr, ntFlags uint32, ok bool) {
 
 // loadNTOSData ensures the reader's block buffer covers the OS-specific data
 // area, then parses the Windows NT OS-specific fields (OS ID 14, spec
-// Structures 42/43) via ntOSData. The descriptor block's fields may extend past
-// the minimum the caller already ensured, so the buffer is grown to cover the
-// OS-data area before it is read.
-func (r *Reader) loadNTOSData() (winAttr, ntFlags uint32, ok bool) {
+// Structures 42/43) via ntOSData. fileBlock selects the FILE OS-data layout
+// (NT File Flags at offset 8 for OS Version 1). The descriptor block's fields
+// may extend past the minimum the caller already ensured, so the buffer is
+// grown to cover the OS-data area before it is read.
+func (r *Reader) loadNTOSData(fileBlock bool) (winAttr, ntFlags uint32, ok bool) {
 	if u8(r.blk, dbOSIDOff) != 14 {
 		return 0, 0, false
 	}
@@ -170,7 +179,7 @@ func (r *Reader) loadNTOSData() (winAttr, ntFlags uint32, ok bool) {
 			return 0, 0, false
 		}
 	}
-	return ntOSData(r.blk)
+	return ntOSData(r.blk, fileBlock)
 }
 
 // loadVolbNTOSData ensures the reader's block buffer covers the OS-specific

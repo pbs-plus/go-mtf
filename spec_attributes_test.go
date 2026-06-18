@@ -75,17 +75,18 @@ func TestSpecWinAttributeValues(t *testing.T) {
 // TestSpecWinAttributesFromOSData verifies that for a Windows NT entry (OS ID
 // 14, OS version 1) the dwFileAttributes at OS-specific offset 0 are loaded
 // into Header.WinAttributes and the NT File Flags at offset 8 into
-// Header.NTFileFlags (spec Structures 42/43).
+// Header.NTFileFlags (spec Structure 43 — the NT File Flags field exists only
+// in a FILE block at OS Version 1; a DIRB, per Structure 42, has none).
 func TestSpecWinAttributesFromOSData(t *testing.T) {
 	const osidNT uint8 = 14
 	const osverNT1 uint8 = 1
 
-	mt := time.Date(2005, 6, 1, 12, 0, 0, 0, time.Local)
-	b := buildDIRB(1, "ntdir", mt)
+	// Build a FILE block (Structure 43 carries the NT File Flags at offset 8).
+	b := buildFileWithStreams("ntfile.txt")
 	b[dbOSIDOff] = osidNT
 	b[dbOSVerOff] = osverNT1
 
-	// Append an OS-specific data area holding Structure 42:
+	// Append an OS-specific data area holding Structure 43:
 	//   @0 dwFileAttributes (READONLY|HIDDEN) = 0x03
 	//   @4 short name offset = 0
 	//   @6 short name size = 0
@@ -93,7 +94,7 @@ func TestSpecWinAttributesFromOSData(t *testing.T) {
 	osData := make([]byte, 12)
 	binary.LittleEndian.PutUint32(osData[0:], 0x03) // READONLY|HIDDEN
 	binary.LittleEndian.PutUint32(osData[8:], NTFilePOSIX)
-	osOff := dirbNameOff + 4 // place it in the slack of the block
+	osOff := len(b) - len(osData) - 2 // place it in the slack of the block
 	copy(b[osOff:], osData)
 	// Point the common header's OS Data Area pointer at it.
 	b[dbOSDataOff] = byte(len(osData))
@@ -105,6 +106,7 @@ func TestSpecWinAttributesFromOSData(t *testing.T) {
 	buf.Write(buildTape())
 	buf.Write(buildSSET())
 	buf.Write(buildVOLB("C:"))
+	buf.Write(buildDIRB(1, "d", time.Date(2005, 6, 1, 12, 0, 0, 0, time.Local)))
 	buf.Write(b)
 	buf.Write(buildESET())
 
@@ -117,18 +119,18 @@ func TestSpecWinAttributesFromOSData(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if blk.Kind == KindEntry && blk.Header.Type == EntryDirectory {
+		if blk.Kind == KindEntry && blk.Header.Type == EntryFile {
 			h := blk.Header
 			if h.WinAttributes != 0x03 {
-				t.Errorf("WinAttributes = %#x, want 0x03 (OS-data offset 0, spec Structure 42)", h.WinAttributes)
+				t.Errorf("WinAttributes = %#x, want 0x03 (OS-data offset 0, spec Structure 43)", h.WinAttributes)
 			}
 			if h.NTFileFlags != NTFilePOSIX {
-				t.Errorf("NTFileFlags = %#x, want %#x (OS-data offset 8, spec Structure 42)", h.NTFileFlags, NTFilePOSIX)
+				t.Errorf("NTFileFlags = %#x, want %#x (OS-data offset 8, OS Version 1, spec Structure 43)", h.NTFileFlags, NTFilePOSIX)
 			}
 			return
 		}
 	}
-	t.Fatal("no directory entry yielded")
+	t.Fatal("no file entry yielded")
 }
 
 // TestSpecUnixModeFromMTFAttributes verifies Header.UnixMode derives its mode
