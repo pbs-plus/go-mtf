@@ -216,6 +216,7 @@ func TestStreamFlagsParsing(t *testing.T) {
 	preamble[streamStart+stCompressOff] = 0x01                         // algorithm id low byte
 	putU64(preamble, streamStart+stLengthOff, 4)
 	setChecksum(preamble)
+	setStreamChecksum(preamble[streamStart:])
 
 	var buf bytes.Buffer
 	buf.Write(buildTape())
@@ -235,6 +236,7 @@ func TestStreamFlagsParsing(t *testing.T) {
 	spad := make([]byte, streamHeaderSize)
 	putU32(spad, stTypeOff, StreamSPAD)
 	putU64(spad, stLengthOff, uint64(spadDataLen))
+	setStreamChecksum(spad)
 	buf.Write(spad)
 	if spadDataLen > 0 {
 		buf.Write(make([]byte, spadDataLen))

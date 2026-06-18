@@ -127,6 +127,7 @@ func buildMBCArchiveWithFDD(fdd []byte) []byte {
 	tfddHdr := make([]byte, 22)
 	binary.LittleEndian.PutUint32(tfddHdr[0:], StreamTFDD)
 	binary.LittleEndian.PutUint64(tfddHdr[8:], uint64(len(fdd)))
+	setStreamChecksum(tfddHdr)
 	eset = append(eset, tfddHdr...)
 	eset = append(eset, fdd...)
 	for len(eset)%4 != 0 {
@@ -135,6 +136,7 @@ func buildMBCArchiveWithFDD(fdd []byte) []byte {
 	tsmpHdr := make([]byte, 22)
 	binary.LittleEndian.PutUint32(tsmpHdr[0:], StreamTSMP)
 	binary.LittleEndian.PutUint64(tsmpHdr[8:], uint64(len(smp)))
+	setStreamChecksum(tsmpHdr)
 	eset = append(eset, tsmpHdr...)
 	eset = append(eset, smp...)
 	for len(eset)%4 != 0 {
@@ -142,6 +144,7 @@ func buildMBCArchiveWithFDD(fdd []byte) []byte {
 	}
 	spad := make([]byte, 22)
 	binary.LittleEndian.PutUint32(spad[0:], StreamSPAD)
+	setStreamChecksum(spad)
 	eset = append(eset, spad...)
 	for len(eset)%512 != 0 {
 		eset = append(eset, 0)

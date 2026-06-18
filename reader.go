@@ -621,6 +621,16 @@ func (r *Reader) streamStart() error {
 		return nil
 	}
 	r.readStreamHeader()
+	// Validate the stream header checksum (spec "Checksum" under
+	// MTF_STREAM_HDR): a word-wise XOR over bytes 0..19 must equal the
+	// stored checksum at bytes 20..21. A mismatch means the stream
+	// descriptor is corrupt or the read position has desynchronized.
+	// Wrapped as io.ErrUnexpectedEOF so endOrError converts to io.EOF
+	// once a data set has ended.
+	if !streamChecksumValid(r.blk, int(r.streamOff)) {
+		return fmt.Errorf("mtf: corrupt stream header at offset %d: checksum mismatch (streamType=%d): %w",
+			r.abspos, r.streamType, io.ErrUnexpectedEOF)
+	}
 	return nil
 }
 
@@ -847,7 +857,7 @@ func (r *Reader) Next() (*Block, error) {
 				return nil, err
 			}
 			if err := r.streamStart(); err != nil {
-				return nil, err
+				return nil, r.endOrError(err)
 			}
 			r.cur = h
 			if err := r.materializeStreams(h); err != nil {

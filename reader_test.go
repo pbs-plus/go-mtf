@@ -119,6 +119,7 @@ func buildFILE(id, dirid uint32, name string, mtime time.Time, content []byte) [
 	putU32(preamble, streamStart+stTypeOff, StreamSTAN)
 	putU64(preamble, streamStart+stLengthOff, uint64(len(content)))
 	setChecksum(preamble)
+	setStreamChecksum(preamble[streamStart:])
 
 	var out bytes.Buffer
 	out.Write(preamble)
@@ -137,6 +138,7 @@ func buildFILE(id, dirid uint32, name string, mtime time.Time, content []byte) [
 	spad := make([]byte, streamHeaderSize)
 	putU32(spad, stTypeOff, StreamSPAD)
 	putU64(spad, stLengthOff, uint64(spadDataLen))
+	setStreamChecksum(spad)
 	out.Write(spad)
 	if spadDataLen > 0 {
 		out.Write(bytes.Repeat([]byte{0}, spadDataLen))

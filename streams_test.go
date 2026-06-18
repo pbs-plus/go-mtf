@@ -19,7 +19,18 @@ func streamDescriptor(typ uint32, data []byte) []byte {
 	putU32(b, stTypeOff, typ)
 	putU64(b, stLengthOff, uint64(len(data)))
 	copy(b[streamHeaderSize:], data)
+	setStreamChecksum(b)
 	return b
+}
+
+// setStreamChecksum computes and stores the MTF_STREAM_HDR Checksum (word-wise
+// XOR over bytes 0..19, stored at bytes 20..21) on the stream header buffer.
+func setStreamChecksum(b []byte) {
+	var sum uint16
+	for i := 0; i < stChecksumOff; i += 2 {
+		sum ^= u16(b, i)
+	}
+	putU16(b, stChecksumOff, int(sum))
 }
 
 // sparseStanDescriptor emits a STAN stream header carrying the STREAM_IS_SPARSE
@@ -27,6 +38,7 @@ func streamDescriptor(typ uint32, data []byte) []byte {
 func sparseStanDescriptor() []byte {
 	b := streamDescriptor(StreamSTAN, nil)
 	putU16(b, stSysAttrOff, int(StreamFSSparse))
+	setStreamChecksum(b)
 	return b
 }
 
@@ -56,6 +68,7 @@ func buildStreams(preambleLen int, streams ...[]byte) []byte {
 	spad := make([]byte, streamHeaderSize)
 	putU32(spad, stTypeOff, StreamSPAD)
 	putU64(spad, stLengthOff, uint64(spadDataLen))
+	setStreamChecksum(spad)
 	out.Write(spad)
 	if spadDataLen > 0 {
 		out.Write(bytes.Repeat([]byte{0}, spadDataLen))
@@ -521,6 +534,7 @@ func TestLargeCatalogStreamEndToEnd(t *testing.T) {
 	tfddHdr := make([]byte, streamHeaderSize)
 	binary.LittleEndian.PutUint32(tfddHdr[stTypeOff:], StreamTFDD)
 	binary.LittleEndian.PutUint64(tfddHdr[stLengthOff:], uint64(len(payload)))
+	setStreamChecksum(tfddHdr)
 	eset = append(eset, tfddHdr...)
 	eset = append(eset, payload...)
 	for len(eset)%4 != 0 {
@@ -528,6 +542,7 @@ func TestLargeCatalogStreamEndToEnd(t *testing.T) {
 	}
 	spad := make([]byte, streamHeaderSize)
 	binary.LittleEndian.PutUint32(spad[stTypeOff:], StreamSPAD)
+	setStreamChecksum(spad)
 	eset = append(eset, spad...)
 	for len(eset)%512 != 0 {
 		eset = append(eset, 0)

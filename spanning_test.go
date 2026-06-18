@@ -96,6 +96,7 @@ func splitFileFirst(id, dirid uint32, name string, mtime time.Time, fullData []b
 	putU32(preamble, streamStart+stTypeOff, StreamSTAN)
 	putU64(preamble, streamStart+stLengthOff, uint64(len(fullData))) // FULL length
 	setChecksum(preamble)
+	setStreamChecksum(preamble[streamStart:])
 	var out bytes.Buffer
 	out.Write(preamble)
 	out.Write(fullData[:keepData])
@@ -122,6 +123,7 @@ func continuationFile(id uint32, name string, mtime time.Time, remain []byte, n 
 	putU16(preamble, streamStart+stMediaAttrOff, int(StreamMediaContinue))
 	putU64(preamble, streamStart+stLengthOff, uint64(len(remain))) // remaining length
 	setChecksum(preamble)
+	setStreamChecksum(preamble[streamStart:])
 	blk := padToFLB(preamble, testFLBSize)    // FILE block fills one FLB
 	data := padToFLB(remain[:n], testFLBSize) // data at next FLB boundary
 	return append(blk, data...)

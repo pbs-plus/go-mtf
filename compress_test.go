@@ -67,6 +67,7 @@ func compressedStan(raw []byte, comp, enc bool) []byte {
 	if comp {
 		putU16(b, stCompressOff, int(AlgLZS221))
 	}
+	setStreamChecksum(b)
 	return b
 }
 
