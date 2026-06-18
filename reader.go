@@ -2,6 +2,7 @@ package mtf
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 )
@@ -426,6 +427,9 @@ func (r *Reader) wrapFlbread() {
 // header-only walks on tape (MTF §3.4.3 fast retrieval).
 func (r *Reader) skipStreamData(n int64) error {
 	if r.blockSkipper != nil {
+		if os.Getenv("MTF_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "[mtf] skip n=%d abspos=%d\n", n, r.abspos)
+		}
 		if err := r.blockSkipper.SkipForward(n); err != nil {
 			return err
 		}
@@ -692,6 +696,9 @@ func (r *Reader) streamNext() error {
 	}
 	r.streamOff = probeStreamHeader(r.blk, aligned)
 	r.readStreamHeader()
+	if os.Getenv("MTF_DEBUG") != "" {
+		fmt.Fprintf(os.Stderr, "[mtf] stream type=%d len=%d off=%d abspos=%d flbread=%d did=%d\n", r.streamType, r.streamLen, r.streamOff, r.abspos, r.flbread, r.streamDid)
+	}
 	return nil
 }
 

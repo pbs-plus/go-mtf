@@ -185,7 +185,7 @@ func (r *Reader) readCatalogStream(n int64) ([]byte, error) {
 
 func (r *Reader) readStreamBytesMax(n, maxLen int64) ([]byte, error) {
 	if n < 0 || n > maxLen {
-		return nil, fmt.Errorf("stream data length %d out of range", n)
+		return nil, fmt.Errorf("stream data length %d out of range (abspos=%d streamType=%d flbread=%d)", n, r.abspos, r.streamType, r.flbread)
 	}
 	buf := make([]byte, n)
 	nr, err := r.readFull(buf)
