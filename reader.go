@@ -598,10 +598,14 @@ func (r *Reader) skipStreamData(n int64) error {
 			r.wrapFlbread()
 			return nil
 		}
-		// Seek across blocks (MTSEEK on tape). Fall back to read-discard if the
-		// source cannot seek — safe because a failed SeekBlock leaves the
-		// position unchanged for the built-in sources.
-		if !envNoSeek {
+		// Seek across blocks (MTSEEK on tape) only when the skip is large
+		// enough to justify a hardware LOCATE + read-forward — at least one
+		// physical block. For smaller skips the per-seek overhead (LOCATE +
+		// back-read to the target byte) exceeds simply streaming the bytes, so
+		// fall through to read-discard. This keeps seek mode winning for the
+		// §3.4.3 fast-retrieval case (jumping over a file's large data streams)
+		// without penalising metadata-dense regions full of tiny streams.
+		if !envNoSeek && n >= int64(r.physSize) {
 			if err := r.seekToByte(target); err == nil {
 				r.abspos = target
 				r.flbread += uint32(n)
