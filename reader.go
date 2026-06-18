@@ -10,10 +10,22 @@ import (
 //
 // Use [Next] to advance to the next entry and [Read] to read the standard data
 // of the current file entry. The API intentionally mirrors archive/tar.
+// BlockSkipper is implemented by sources that can advance the read position by
+// a byte count without transferring the skipped data to the host — most
+// importantly a SCSI-generic tape reader that uses a block LOCATE command. When
+// the source implements it, the Reader skips file data via LOCATE instead of
+// reading it, the fast-retrieval path MTF is designed for (spec §3.4.3). The
+// method is matched by name so a concrete type (e.g. gotape.Reader) satisfies it
+// without this package importing it.
+type BlockSkipper interface {
+	SkipForward(n int64) error
+}
+
 type Reader struct {
-	r      io.Reader
-	seeker io.Seeker // non-nil when the source supports seeking; skipStreamData seeks
-	closer io.Closer
+	r            io.Reader
+	seeker       io.Seeker    // non-nil when the source supports seeking; skipStreamData seeks
+	blockSkipper BlockSkipper // non-nil when the source supports block LOCATE (e.g. SCSI tape); skipStreamData skips via LOCATE
+	closer       io.Closer
 
 	blk     []byte // header / stream-header buffer for the current block
 	flbsize uint32 // logical block size (from the TAPE descriptor)
@@ -114,11 +126,16 @@ func Open(name string) (*Reader, error) {
 // NewReader returns a new Reader reading from r. When r implements io.Seeker
 // (for example an *os.File), the reader skips data streams by seeking rather
 // than reading, which is dramatically faster when only block headers are
-// needed (listing, cataloging) on large archives.
+// needed (listing, cataloging) on large archives. When r implements BlockSkipper
+// (for example a SCSI-generic tape reader), the skip uses a block LOCATE so file
+// data is not read at all — the fast-retrieval path on tape (spec §3.4.3).
 func NewReader(r io.Reader) *Reader {
 	rd := &Reader{r: r}
 	if s, ok := r.(io.Seeker); ok {
 		rd.seeker = s
+	}
+	if bs, ok := r.(BlockSkipper); ok {
+		rd.blockSkipper = bs
 	}
 	return rd
 }
@@ -403,8 +420,22 @@ func (r *Reader) wrapFlbread() {
 // continuously across logical block boundaries, so (unlike block alignment)
 // it is not capped to flbsize. When the source is seekable the skip is done
 // with a single Seek rather than reading the bytes, which makes header-only
-// walks (listing, Census) fast on large file-backed archives.
+// walks (listing, Census) fast on large file-backed archives. When the source
+// implements BlockSkipper (e.g. a SCSI-generic tape reader) the skip uses a
+// block LOCATE so file data is not transferred to the host — the fast path for
+// header-only walks on tape (MTF §3.4.3 fast retrieval).
 func (r *Reader) skipStreamData(n int64) error {
+	if r.blockSkipper != nil {
+		if err := r.blockSkipper.SkipForward(n); err != nil {
+			return err
+		}
+		r.peek = r.peek[:0]
+		r.flbread += uint32(n)
+		r.abspos += n
+		r.streamDid += n
+		r.wrapFlbread()
+		return nil
+	}
 	if r.seeker != nil {
 		target := r.abspos + n
 		if _, err := r.seeker.Seek(target, io.SeekStart); err != nil {
@@ -936,7 +967,10 @@ func (r *Reader) skipRemainingData() error {
 	// cross EOF we fall back to the careful per-boundary probe path that
 	// detects and follows the EOTM. This avoids one probe read per Format
 	// Logical Block boundary on large single-medium files.
-	if r.seeker != nil {
+	//
+	// Block-skip sources (tape) do not support a cheap SeekEnd (that would force
+	// a full pass to end-of-data), so they take the forward skip directly.
+	if r.blockSkipper == nil && r.seeker != nil {
 		end, err := r.seeker.Seek(0, io.SeekEnd)
 		if err != nil {
 			return err
@@ -952,6 +986,16 @@ func (r *Reader) skipRemainingData() error {
 		if _, err := r.seeker.Seek(r.abspos, io.SeekStart); err != nil {
 			return err
 		}
+	}
+	if r.blockSkipper != nil {
+		// Forward skip the whole remaining data via block LOCATE. Spanning is not
+		// handled here (single-medium tape walk); a mid-stream EOTM would surface
+		// as a read error on the next descriptor.
+		if err := r.skipStreamData(r.dataRem); err != nil {
+			return err
+		}
+		r.dataRem = 0
+		return nil
 	}
 	for r.dataRem > 0 {
 		if r.atFLBBoundary() {
