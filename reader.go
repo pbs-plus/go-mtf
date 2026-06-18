@@ -26,6 +26,13 @@ type Reader struct {
 	pendingErr   error     // deferred error (e.g. io.EOF) surfaced once blockBuf drains
 	scratchBlock []byte    // maxTapeBlock destination for Tape.ReadBlock
 
+	// curBlockPBA is the physical block address of the block currently held in
+	// blockBuf, captured via Tape.TellBlock at the moment fillBlock read it
+	// (before any of its bytes are consumed). -1 if unavailable. Used to anchor
+	// the §3.4.3 seek calculation at the SSET without being skewed by driver
+	// read-ahead or by header bytes already consumed.
+	curBlockPBA int64
+
 	blk     []byte // header / stream-header buffer for the current block
 	flbsize uint32 // logical block size (from the TAPE descriptor)
 	flbread uint32 // bytes consumed within the current logical block
@@ -340,6 +347,13 @@ func (r *Reader) Checksum() (stored, computed uint16) {
 // is delivered first and the error is held in pendingErr until blockBuf drains.
 func (r *Reader) fillBlock() error {
 	for {
+		// Record the PBA of the block we are about to read, so the reader can
+		// anchor seeks at the SSET's own block rather than a read-ahead position.
+		if pba, err := r.src.TellBlock(); err == nil {
+			r.curBlockPBA = pba
+		} else {
+			r.curBlockPBA = -1
+		}
 		n, err := r.src.ReadBlock(r.scratchBlock)
 		if n > 0 {
 			r.blockBuf = r.scratchBlock[:n]
@@ -531,24 +545,27 @@ func (r *Reader) seekToByte(target int64) error {
 	return nil
 }
 
-// captureSsetAnchor records the PBA anchor for the current Data Set at the
-// moment the MTF_SSET DBLK is about to be parsed. abspos already points at the
-// SSET's first byte; TellBlock gives the source's current block address.
+// captureSsetAnchor records the PBA anchor for the current Data Set. It is
+// called once scanStart has identified the MTF_SSET DBLK by reading its
+// common header (dbCommonSize bytes) from the current physical block. The
+// SSET's own physical block address is r.curBlockPBA (captured by fillBlock
+// before the block was read), and its block-start byte position is
+// abspos - blockOff (blockOff bytes of the block have been consumed). Per
+// spec §3.4.2 the SSET is block-aligned, so this pair anchors the §3.4.3
+// FLA→PBA seek calculation within the Data Set, where PBAs are sequential and
+// uniformly physSize bytes apart.
 //
 // The anchor is only meaningful for sources whose PBAs are device-native and
-// therefore NOT simply bytepos/physSize (e.g. a real tape drive via DriveTape,
-// where the Media Header before the SSET means PBA 0 != byte 0). For sources
-// whose PBAs are byte-derived (SliceTape, fileTape), the legacy
-// target/physSize seek math is exact and the anchor is left disabled.
-//
-// A source opts into native-PBA anchoring by implementing nativePBASource.
+// therefore NOT simply bytepos/physSize (a real tape drive via DriveTape: the
+// Media Header + filemark before the SSET mean PBA 0 != byte 0, and filemarks
+// occupy PBA slots without bytes). For byte-derived sources (SliceTape,
+// fileTape) the legacy target/physSize seek math is exact and the anchor is
+// left disabled. A source opts in by implementing nativePBASource.
 func (r *Reader) captureSsetAnchor() {
-	r.ssetAbsPos = r.abspos
+	r.ssetAbsPos = r.abspos - int64(r.blockOff)
 	r.ssetPBA = -1
-	if ns, ok := r.src.(nativePBASource); ok && ns.NativePBA() {
-		if pba, err := r.src.TellBlock(); err == nil {
-			r.ssetPBA = pba
-		}
+	if ns, ok := r.src.(nativePBASource); ok && ns.NativePBA() && r.curBlockPBA >= 0 {
+		r.ssetPBA = r.curBlockPBA
 	}
 }
 
@@ -561,6 +578,10 @@ type nativePBASource interface {
 	NativePBA() bool
 }
 
+// envNoSeek (set from MTF_NOSEEK) disables the SeekBlock fast-skip path in
+// skipStreamData, forcing read-discard. Diagnostic; used by integration tests
+// to prove the seek and read-discard paths agree.
+var envNoSeek = os.Getenv("MTF_NOSEEK") != ""
 func (r *Reader) skipStreamData(n int64) error {
 	if n == 0 {
 		return nil
@@ -580,12 +601,14 @@ func (r *Reader) skipStreamData(n int64) error {
 		// Seek across blocks (MTSEEK on tape). Fall back to read-discard if the
 		// source cannot seek — safe because a failed SeekBlock leaves the
 		// position unchanged for the built-in sources.
-		if err := r.seekToByte(target); err == nil {
-			r.abspos = target
-			r.flbread += uint32(n)
-			r.streamDid += n
-			r.wrapFlbread()
-			return nil
+		if !envNoSeek {
+			if err := r.seekToByte(target); err == nil {
+				r.abspos = target
+				r.flbread += uint32(n)
+				r.streamDid += n
+				r.wrapFlbread()
+				return nil
+			}
 		}
 	}
 	for n > 0 {
