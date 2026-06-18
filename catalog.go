@@ -457,16 +457,47 @@ func parseSetMap(raw []byte) *SetMap {
 		MediaFamilyID: u32(raw, smMFMIDOff),
 	}
 	count := int(u16(raw, smCountOff))
-	off := smHdrSize
+	sm.Entries = parseSetMapEntries(raw, smHdrSize, count)
+	return sm
+}
+
+// parseSetMapEntries walks the Set Map payload starting at off, decoding up to
+// count Set Map Entries. Each entry's volume entries may be either nested
+// inside the entry's declared LENGTH (spec §7.3.3) or carried as separate
+// records that follow the entry (the Backup Exec 'SMP2' variant). The two are
+// distinguished by whether numVol volume records fit inside the entry's LENGTH:
+// if they do, the entry is self-contained; otherwise the volumes are read as
+// the following records. This makes the walk robust to both layouts.
+func parseSetMapEntries(raw []byte, off, count int) []SetMapEntry {
+	var out []SetMapEntry
 	for i := 0; i < count && off+smeMinSize <= len(raw); i++ {
 		entry, length, ok := parseSetMapEntry(raw[off:])
 		if !ok {
 			break
 		}
-		sm.Entries = append(sm.Entries, entry)
-		off += length
+		// If the entry declared volumes but none fit within its LENGTH, the
+		// volumes follow as separate records (Backup Exec SMP2 layout). Read
+		// them now so the next iteration lands on the next Set Map Entry.
+		numVol := int(u16(raw, off+smeNumVolOff))
+		if numVol > len(entry.Volumes) {
+			cur := off + length
+			for v := len(entry.Volumes); v < numVol && cur+fddHdrSize <= len(raw); v++ {
+				vlen := int(u16(raw, cur+fddLenOff))
+				if vlen < fddHdrSize || cur+vlen > len(raw) {
+					break
+				}
+				strType := u8(raw, cur+fddStrTypeOff)
+				ve := parseFDDVolume(raw[cur:cur+vlen], strType)
+				entry.Volumes = append(entry.Volumes, *ve)
+				cur += vlen
+			}
+			off = cur
+		} else {
+			off += length
+		}
+		out = append(out, entry)
 	}
-	return sm
+	return out
 }
 
 // parseSetMapEntry decodes one Set Map Entry followed by its Number-Of-Volumes
@@ -501,18 +532,19 @@ func parseSetMapEntry(rec []byte) (entry SetMapEntry, length int, ok bool) {
 	entry.WriteTime = decodeDateTime(rec, smeDateOff)
 	entry.TimeZone = int8(u8(rec, smeTZOff))
 
-	// Volume entries follow the fixed fields. Each is an MTF_FDD_VOLB whose own
-	// LENGTH field gives its size (fixed fields + appended strings); the
-	// offsets within it are relative to its own start.
+	// Volume entries follow the fixed fields, packed within this entry's
+	// declared LENGTH (spec §7.3.3: the entry's LENGTH covers the fixed fields,
+	// the volume entries, and appended name/description strings). Parse the
+	// numVol volumes that fit inside [smeMinSize, entryLen).
 	numVol := int(u16(rec, smeNumVolOff))
 	cur := smeMinSize
 	vols := make([]CatalogEntry, 0, numVol)
 	for range numVol {
-		if cur+fddHdrSize > len(rec) {
+		if cur+fddHdrSize > entryLen || cur+fddHdrSize > len(rec) {
 			break
 		}
 		vlen := int(u16(rec, cur+fddLenOff))
-		if vlen < fddHdrSize || cur+vlen > len(rec) {
+		if vlen < fddHdrSize || cur+vlen > entryLen || cur+vlen > len(rec) {
 			break
 		}
 		ve := parseFDDVolume(rec[cur:cur+vlen], strType)
@@ -520,7 +552,7 @@ func parseSetMapEntry(rec []byte) (entry SetMapEntry, length int, ok bool) {
 		cur += vlen
 	}
 	entry.Volumes = vols
-	length = cur
+	length = entryLen
 	return entry, length, true
 }
 
