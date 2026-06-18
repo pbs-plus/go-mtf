@@ -173,6 +173,31 @@ func (r *Reader) loadNTOSData() (winAttr, ntFlags uint32, ok bool) {
 	return ntOSData(r.blk)
 }
 
+// loadVolbNTOSData ensures the reader's block buffer covers the OS-specific
+// data area, then parses the Windows NT volume OS-specific fields (OS ID 14,
+// spec Structure 41): the file-system flags at offset 0 and the NT Backup Set
+// Attributes at offset 4 (whose BIT0 is NT_VOLB_IS_DR_CANDIDATE). fsFlags and
+// ntBackupAttr are zero if the area is absent or the block is not NT.
+func (r *Reader) loadVolbNTOSData() (fsFlags, ntBackupAttr uint32, ok bool) {
+	if u8(r.blk, dbOSIDOff) != 14 {
+		return 0, 0, false
+	}
+	osSize, osOff := tapepos(r.blk, dbOSDataOff)
+	if need := int(osOff) + int(osSize); need > len(r.blk) {
+		if err := r.ensure(need); err != nil {
+			return 0, 0, false
+		}
+	}
+	base := int(osOff)
+	if osSize >= 4 && base+4 <= len(r.blk) {
+		fsFlags = u32(r.blk, base)
+	}
+	if osSize >= 8 && base+8 <= len(r.blk) {
+		ntBackupAttr = u32(r.blk, base+4)
+	}
+	return fsFlags, ntBackupAttr, true
+}
+
 // commonChecksum returns the MTF common-block header checksum for the given
 // block: a 16-bit word-wise XOR over all MTF_DB_HDR fields except the checksum
 // field itself (bytes 0..49, i.e. 25 little-endian words). See MTF spec,

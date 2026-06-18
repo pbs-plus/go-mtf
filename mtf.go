@@ -97,6 +97,16 @@ type Header struct {
 	// MachineName is the name of the source machine, if recorded (volume
 	// entries).
 	MachineName string
+	// FileSystemFlags is the Win32 file-system flags (lpFileSystemFlags from
+	// GetVolumeInformation) recorded in the OS-specific data area of a Windows
+	// NT volume entry (OS ID 14, spec Structure 41, offset 0). It is zero for
+	// non-volume entries or when the OS-specific data is absent.
+	FileSystemFlags uint32
+	// IsDRCandidate reports whether the volume's data is suitable for an NT
+	// system recovery, per the NT_VOLB_IS_DR_CANDIDATE bit (spec Structure 41 /
+	// Table 27, BIT0 of the NT Backup Set Attributes at OS-data offset 4). It
+	// is meaningful only for volume (VOLB) entries of Windows NT origin.
+	IsDRCandidate bool
 	// FileID is the MTF object identifier of the file (files only).
 	FileID uint32
 	// DirID is the identifier of the directory containing the entry.
@@ -409,6 +419,14 @@ const (
 	NTFileLinkFlag uint32 = 0x00000001
 	// NTFilePOSIX (BIT16) is set when the file is POSIX.
 	NTFilePOSIX uint32 = 0x00010000
+)
+
+// NT VOLB OS-specific flags (spec Structure 41 / Table 27). The NT Backup Set
+// Attributes field sits at offset 4 of a volume entry's OS-specific data area.
+const (
+	// VOLBNTDRCandidate (NT_VOLB_IS_DR_CANDIDATE, BIT0) is set when the data
+	// following the VOLB is suitable for an NT system recovery.
+	VOLBNTDRCandidate uint32 = 0x00000001
 )
 
 // Windows reparse tag values for NTRP streams. These identify the type of

@@ -1225,6 +1225,12 @@ func (r *Reader) parseVolb() (*Header, error) {
 	h.Attributes = u32(r.blk, volbAttrOff)
 	h.BlockAttributes = u32(r.blk, dbAttrOff)
 	h.OSID = u8(r.blk, dbOSIDOff)
+	// Parse Windows NT volume OS-specific data (OS ID 14, spec Structure 41):
+	// file-system flags at offset 0, NT Backup Set Attributes at offset 4.
+	if fsFlags, ntBackupAttr, ok := r.loadVolbNTOSData(); ok {
+		h.FileSystemFlags = fsFlags
+		h.IsDRCandidate = ntBackupAttr&VOLBNTDRCandidate != 0
+	}
 	h.DisplayableSize = u64(r.blk, dbSizeOff)
 	h.CreateTime = decodeDateTime(r.blk, volbCTimeOff)
 	h.ModTime = decodeDateTime(r.blk, volbCTimeOff)

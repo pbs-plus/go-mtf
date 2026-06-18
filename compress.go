@@ -46,6 +46,27 @@ func wordXORChecksum(b []byte) uint16 {
 	return sum
 }
 
+// Checksum32 returns the MTF data-stream checksum: a 32-bit XOR of the linear
+// stream data (spec Figure 19 / section 6.2.1.4). The algorithm is independent
+// of how the data is segmented: the bytes are consumed four at a time as
+// little-endian 32-bit words and XOR-accumulated, with any trailing 1-3 bytes
+// XORed into the low bytes of the accumulator. This yields the same value
+// whether the data is chunked into 1, 2, 3 or 4-byte pieces. It is the value a
+// Checksum Stream ('CSUM') carries for the preceding data stream.
+func Checksum32(b []byte) uint32 {
+	var sum uint32
+	n := len(b) &^ 3 // largest multiple of 4
+	for i := 0; i < n; i += 4 {
+		sum ^= binary.LittleEndian.Uint32(b[i : i+4])
+	}
+	// Trailing 1-3 bytes form a partial little-endian word in the low bytes.
+	var tail uint32
+	for j := n; j < len(b); j++ {
+		tail |= uint32(b[j]) << (8 * uint(j-n))
+	}
+	return sum ^ tail
+}
+
 // parseFrameHeader reads and validates a 24-byte frame header from fr. The
 // header checksum (word-wise XOR of the first 22 bytes) is verified; a mismatch
 // is treated as corruption. The kind of frame ('FH'/'EH') must match wantEnc.
