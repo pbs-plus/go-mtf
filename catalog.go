@@ -543,16 +543,23 @@ func isSetMapStream(id uint32) bool {
 // enumerate every data set (name, SSETPBA, FLA, file count, size) in a handful
 // of block reads near end-of-media instead of walking every file forward.
 //
-// tape must be a positionable source (DriveTape, SliceTape, fileTape). It is
-// positioned at end of recorded data on entry (DriveTape via EOM; for others
-// the caller should seek to the end first) and is left positioned at the Set
-// Map block on success (callers doing further I/O should Rewind/SeekBlock).
+// If the tape implements EOM() (e.g. [DriveTape]), ReadSetMap positions at
+// end-of-recorded media first; otherwise the caller must have positioned it
+// there. The tape's final position is unspecified on return — callers should
+// Rewind/SeekBlock before further sequential use.
 //
 // Returns (nil, nil) if no Set Map is present — e.g. a data-only continuation
 // cartridge (the EOTM's MTF_NO_ESET_PBA / MTF_INVALID_ESET_PBA attribute bits
-// are set, or no Set Map stream header is found in the trailing blocks).
-// Callers should fall back to a forward walk (Reader.Next) in that case.
+// are set, the medium has no EOTM, or no Set Map stream header is found in the
+// trailing blocks). Callers should fall back to a forward walk (Reader.Next)
+// in that case.
 func ReadSetMap(tape Tape) (*SetMap, error) {
+	// Position at end of recorded media if the source supports it.
+	if e, ok := tape.(interface{ EOM() error }); ok {
+		if err := e.EOM(); err != nil {
+			return nil, fmt.Errorf("mtf: ReadSetMap: position at EOM: %w", err)
+		}
+	}
 	end, err := tape.TellBlock()
 	if err != nil {
 		return nil, fmt.Errorf("mtf: ReadSetMap: tape must report position: %w", err)

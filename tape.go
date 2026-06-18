@@ -228,6 +228,13 @@ func (t *DriveTape) SeekBlock(block int64) error { return t.d.SeekBlock(block) }
 // the MTF_SSET DBLK, anchoring the §3.4.3 FLA→PBA seek calculation.
 func (t *DriveTape) TellBlock() (int64, error) { return t.d.TellBlock() }
 
+// EOM positions the drive at end-of-recorded media. Used by [ReadSetMap] to
+// reach the trailing MTF_EOTM before reading the Media Based Catalog.
+func (t *DriveTape) EOM() error { return t.d.EOM() }
+
+// Rewind rewinds the drive to beginning of tape.
+func (t *DriveTape) Rewind() error { return t.d.Rewind() }
+
 // NativePBA marks DriveTape as a source whose PBAs are device-native and
 // independent of byte offset. The Reader uses this to select the §3.4.3
 // SSET-anchored seek calculation instead of the byte-derived fallback.
