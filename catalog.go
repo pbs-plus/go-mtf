@@ -153,6 +153,12 @@ type SetMap struct {
 // SetMapEntry summarizes one data set (one SSET, typically one host's backup)
 // within a Media Family, and is followed by its volume entries.
 type SetMapEntry struct {
+	// Len is the entry's declared LENGTH (UINT16 at offset 0): the byte size of
+	// the entry's fixed fields plus, in the spec Type 1 layout, its nested
+	// volume records and appended strings. Populated by ParseSetMapEntryFixed.
+	Len int
+	// NumVolumes is the declared Number-Of-Volumes count for this entry.
+	NumVolumes int
 	// MediaSeq is the Media Sequence Number of the medium this data set begins
 	// on, copied from the TAPE block.
 	MediaSeq uint16
@@ -212,7 +218,7 @@ func (r *Reader) Catalog() *Catalog {
 		RawSetMap: r.catSMPraw,
 	}
 	c.FDD = parseFDD(r.catFDDraw)
-	c.SetMap = parseSetMap(r.catSMPraw)
+	c.SetMap = parseSetMapFor(r.catSMPStreamID, r.catSMPraw)
 	// When the standard parser finds no entries (the FDD payload is vendor-
 	// specific), attempt Backup Exec auto-detection.
 	if len(c.FDD) == 0 && len(c.RawFDD) > 0 {
@@ -268,6 +274,7 @@ func (r *Reader) captureCatalog() error {
 				return err
 			}
 			r.catSMPraw = append(r.catSMPraw[:0], b...)
+			r.catSMPStreamID = r.streamType
 			r.catalog = nil
 		}
 		if err := r.streamNext(); err != nil {
@@ -449,6 +456,52 @@ const (
 
 // parseSetMap decodes a Type 1 'TSMP' stream payload into a Set Map. It returns
 // nil for a payload too short or non-standard to contain a Set Map header.
+// SetMapParser parses a proprietary Set Map stream payload (the bytes after
+// the 22-byte stream header) into a *SetMap. The MTF spec (§7.3.3) defines the
+// standard Type 1 'TSMP' and Type 2 'MAP2' layouts, which the main package
+// parses directly. Vendors may use other stream IDs for their catalogs (the
+// spec reserves the MBC fields for "application specific information", §5.1);
+// those are implemented by registering a SetMapParser for the stream ID.
+//
+// Implementations are read-only and should tolerate truncation.
+type SetMapParser interface {
+	ParseSetMap(raw []byte) *SetMap
+}
+
+// SetMapParserFunc is a function adapter for [SetMapParser].
+type SetMapParserFunc func(raw []byte) *SetMap
+
+// ParseSetMap implements [SetMapParser].
+func (f SetMapParserFunc) ParseSetMap(raw []byte) *SetMap { return f(raw) }
+
+// setMapParsers maps a Set Map stream ID to a proprietary parser registered via
+// [RegisterSetMapParser]. The main package never adds to it; the spec TSMP/MAP2
+// layouts are handled by [parseSetMap] regardless of registration.
+var setMapParsers = map[uint32]SetMapParser{}
+
+// RegisterSetMapParser registers a parser for a proprietary Set Map stream ID
+// (e.g. the Backup Exec 'SMP2' variant, registered by the becatalog/besetmap
+// subpackage). It is intended to be called from a package init() so that
+// importing the package (blank import) opts in: the main mtf package itself
+// contains no vendor-specific parsing. Registering an ID replaces any prior
+// registration for that ID; it is not safe to call concurrently with parse.
+func RegisterSetMapParser(streamID uint32, p SetMapParser) { setMapParsers[streamID] = p }
+
+// parseSetMapFor selects the parser for the given Set Map stream ID. The spec
+// IDs 'TSMP' and 'MAP2' always use the built-in [parseSetMap]; any other ID
+// dispatches to a registered [SetMapParser], falling back to parseSetMap when
+// nothing is registered (best-effort, since most variants are close to spec).
+func parseSetMapFor(streamID uint32, raw []byte) *SetMap {
+	switch streamID {
+	case 0, StreamTSMP, StreamMAP2:
+		return parseSetMap(raw)
+	}
+	if p, ok := setMapParsers[streamID]; ok {
+		return p.ParseSetMap(raw)
+	}
+	return parseSetMap(raw)
+}
+
 func parseSetMap(raw []byte) *SetMap {
 	if len(raw) < smHdrSize {
 		return nil
@@ -462,12 +515,11 @@ func parseSetMap(raw []byte) *SetMap {
 }
 
 // parseSetMapEntries walks the Set Map payload starting at off, decoding up to
-// count Set Map Entries. Each entry's volume entries may be either nested
-// inside the entry's declared LENGTH (spec §7.3.3) or carried as separate
-// records that follow the entry (the Backup Exec 'SMP2' variant). The two are
-// distinguished by whether numVol volume records fit inside the entry's LENGTH:
-// if they do, the entry is self-contained; otherwise the volumes are read as
-// the following records. This makes the walk robust to both layouts.
+// count Set Map Entries per the spec §7.3.3 Type 1 layout: each entry's
+// declared LENGTH contains the fixed fields plus the entry's Number-Of-Volumes
+// volume records. Proprietary variants (e.g. Backup Exec SMP2, whose volume
+// records follow the entry as separate stream records) are handled by
+// SetMapParser plugins registered via [RegisterSetMapParser], not here.
 func parseSetMapEntries(raw []byte, off, count int) []SetMapEntry {
 	var out []SetMapEntry
 	for i := 0; i < count && off+smeMinSize <= len(raw); i++ {
@@ -475,36 +527,63 @@ func parseSetMapEntries(raw []byte, off, count int) []SetMapEntry {
 		if !ok {
 			break
 		}
-		// If the entry declared volumes but none fit within its LENGTH, the
-		// volumes follow as separate records (Backup Exec SMP2 layout). Read
-		// them now so the next iteration lands on the next Set Map Entry.
-		numVol := int(u16(raw, off+smeNumVolOff))
-		if numVol > len(entry.Volumes) {
-			cur := off + length
-			for v := len(entry.Volumes); v < numVol && cur+fddHdrSize <= len(raw); v++ {
-				vlen := int(u16(raw, cur+fddLenOff))
-				if vlen < fddHdrSize || cur+vlen > len(raw) {
-					break
-				}
-				strType := u8(raw, cur+fddStrTypeOff)
-				ve := parseFDDVolume(raw[cur:cur+vlen], strType)
-				entry.Volumes = append(entry.Volumes, *ve)
-				cur += vlen
-			}
-			off = cur
-		} else {
-			off += length
-		}
 		out = append(out, entry)
+		off += length
 	}
 	return out
 }
 
-// parseSetMapEntry decodes one Set Map Entry followed by its Number-Of-Volumes
-// volume entries. It returns the decoded entry (with Volumes populated), the
-// total byte length consumed (entry + volume entries), and ok=false if rec is
-// not a recognizable Set Map Entry.
+// parseSetMapEntry decodes one Set Map Entry's fixed fields and the volume
+// entries nested within its declared LENGTH (spec §7.3.3). It returns the
+// decoded entry (with Volumes populated), the entry's declared LENGTH, and
+// ok=false if rec is not a recognizable Set Map Entry. Proprietary layouts
+// that carry volumes as separate records use [ParseSetMapEntryFixed] instead.
 func parseSetMapEntry(rec []byte) (entry SetMapEntry, length int, ok bool) {
+	entry, length, ok = ParseSetMapEntryFixed(rec)
+	if !ok {
+		return entry, length, false
+	}
+	strType := u8(rec, smeStrTypeOff)
+	numVol := int(u16(rec, smeNumVolOff))
+	cur := smeMinSize
+	vols := make([]CatalogEntry, 0, numVol)
+	for range numVol {
+		if cur+fddHdrSize > entry.Len || cur+fddHdrSize > len(rec) {
+			break
+		}
+		vlen := int(u16(rec, cur+fddLenOff))
+		if vlen < fddHdrSize || cur+vlen > entry.Len || cur+vlen > len(rec) {
+			break
+		}
+		ve := parseFDDVolume(rec[cur:cur+vlen], strType)
+		vols = append(vols, *ve)
+		cur += vlen
+	}
+	entry.Volumes = vols
+	return entry, length, true
+}
+
+// SetMapHeaderSize is the byte size of the Set Map header (MFMID + entry
+// count) that precedes the Set Map Entries in every Set Map stream payload.
+const SetMapHeaderSize = smHdrSize
+
+// ParseSetMapHeader decodes a Set Map stream payload header, returning the
+// Media Family ID and the declared Number-Of-Set-Map-Entries. It is exported
+// so proprietary Set Map parsers (registered via [RegisterSetMapParser]) can
+// share the header convention.
+func ParseSetMapHeader(raw []byte) (mediaFamilyID uint32, count int) {
+	if len(raw) < smHdrSize {
+		return 0, 0
+	}
+	return u32(raw, smMFMIDOff), int(u16(raw, smCountOff))
+}
+
+// ParseSetMapEntryFixed decodes one Set Map Entry's fixed fields (everything
+// up to and excluding its volume entries) and returns it with Len set to the
+// entry's declared LENGTH. It does NOT parse volume entries; callers add those
+// per their layout (spec: nested in LENGTH; Backup Exec SMP2: separate records).
+// ok is false if rec is too short or the declared LENGTH is implausible.
+func ParseSetMapEntryFixed(rec []byte) (entry SetMapEntry, length int, ok bool) {
 	if len(rec) < smeMinSize {
 		return entry, 0, false
 	}
@@ -513,7 +592,8 @@ func parseSetMapEntry(rec []byte) (entry SetMapEntry, length int, ok bool) {
 		return entry, 0, false
 	}
 	strType := u8(rec, smeStrTypeOff)
-
+	entry.Len = entryLen
+	entry.NumVolumes = int(u16(rec, smeNumVolOff))
 	entry.MediaSeq = u16(rec, smeMediaSeqOff)
 	entry.BlockAttributes = u32(rec, smeAttrOff)
 	entry.SSETAttributes = u32(rec, smeSSETAttrOff)
@@ -531,30 +611,25 @@ func parseSetMapEntry(rec []byte) (entry SetMapEntry, length int, ok bool) {
 	entry.Owner = fddString(rec, smeUserOff, strType)
 	entry.WriteTime = decodeDateTime(rec, smeDateOff)
 	entry.TimeZone = int8(u8(rec, smeTZOff))
-
-	// Volume entries follow the fixed fields, packed within this entry's
-	// declared LENGTH (spec §7.3.3: the entry's LENGTH covers the fixed fields,
-	// the volume entries, and appended name/description strings). Parse the
-	// numVol volumes that fit inside [smeMinSize, entryLen).
-	numVol := int(u16(rec, smeNumVolOff))
-	cur := smeMinSize
-	vols := make([]CatalogEntry, 0, numVol)
-	for range numVol {
-		if cur+fddHdrSize > entryLen || cur+fddHdrSize > len(rec) {
-			break
-		}
-		vlen := int(u16(rec, cur+fddLenOff))
-		if vlen < fddHdrSize || cur+vlen > entryLen || cur+vlen > len(rec) {
-			break
-		}
-		ve := parseFDDVolume(rec[cur:cur+vlen], strType)
-		vols = append(vols, *ve)
-		cur += vlen
-	}
-	entry.Volumes = vols
-	length = entryLen
-	return entry, length, true
+	return entry, entryLen, true
 }
+
+// FDDCommonHeaderSize is the byte size of the MTF_FDD_HDR common header that
+// begins every FDD/Set-Map volume record.
+const FDDCommonHeaderSize = fddHdrSize
+
+// FDDRecordLenOff is the offset of the UINT16 LENGTH field within an FDD
+// common header (a volume record's own size).
+const FDDRecordLenOff = fddLenOff
+
+// FDDRecordStrTypeOff is the offset of the UINT8 STRING_TYPE field within an
+// FDD common header.
+const FDDRecordStrTypeOff = fddStrTypeOff
+
+// ParseFDDVolume decodes one FDD volume record (MTF_FDD_VOLB) from rec using
+// the given string type. Exported for proprietary Set Map parsers that read
+// volume records individually.
+func ParseFDDVolume(rec []byte, strType uint8) *CatalogEntry { return parseFDDVolume(rec, strType) }
 
 // Field offsets used by catalog-directed access (spec §5.2.9 EOTM, §5.2.8 ESET).
 const (
@@ -653,7 +728,7 @@ func ReadSetMap(tape Tape) (*SetMap, error) {
 		if perr != nil {
 			return nil, fmt.Errorf("mtf: ReadSetMap: read Set Map stream at %d: %w", p, perr)
 		}
-		return parseSetMap(payload), nil
+		return parseSetMapFor(id, payload), nil
 	}
 	return nil, nil // no Set Map stream header in range
 }

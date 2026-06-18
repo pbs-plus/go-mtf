@@ -11,6 +11,42 @@ two data streams attached to the end-of-set (ESET) descriptor block:
 
 Both are accessible via `Block.Catalog` when `Kind == KindSetEnd`.
 
+### The Backup Exec `SMP2` Set Map stream
+
+Real-world Backup Exec (Veritas) cartridges do not use the spec's `MAP2` Set
+Map stream ID. They write an undocumented stream whose four-byte ID is
+`SMP2` (bytes `53 4D 50 32`, `0x32504D53` when read as a little-endian uint32).
+The MTF_100a specification does not mention `SMP2`; it is not in any Backup Exec
+public reference located to date, and its layout is documented here purely from
+empirical observation of produced media, not from a vendor specification.
+
+What is observed:
+
+- The `SMP2` stream occupies the Set Map position in the catalog region
+  (immediately before the closing `ESET`, where `MAP2` would be) and is parsed
+  by the same Set Map record layout (an `MTF_SM_HDR` followed by Set Map
+  Entries, each with `Number-Of-Volumes` volume entries).
+- **Volume entries follow each Set Map Entry as separate records in the stream**
+  rather than being nested inside the entry's `LENGTH`, which is the one
+  material difference from the Type 1 spec layout.
+
+To keep the main `mtf` package free of vendor-specific logic, `SMP2` is not
+parsed by the built-in Set Map parser. Instead the main package exposes a
+plugin seam — [mtf.RegisterSetMapParser] — and the `besetmap` subpackage
+implements and registers the `SMP2` parser on import. Programs that need
+Backup Exec Set Map support add a blank import:
+
+```go
+import _ "github.com/pbs-plus/go-mtf/besetmap"
+```
+
+Without that import, [mtf.Reader.Catalog] and [mtf.ReadSetMap] fall back to
+the spec `TSMP`/`MAP2` parser for `SMP2` payloads (best effort).
+
+In code the stream ID is the constant `StreamSM2P` (alias `StreamSMP2`);
+`StreamName` reports it as `"SMP2"`. The historical `SM2P` spelling was a
+misreading of the byte order and is retained only as the constant name.
+
 ## Catalog struct
 
 ```go

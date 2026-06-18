@@ -498,7 +498,8 @@ const (
 	StreamTFDD uint32 = 0x44444654 // fdd, media based catalog, type 1
 	StreamMAP2 uint32 = 0x3250414D // set map, media based catalog, type 2
 	StreamFDD2 uint32 = 0x32444446 // fdd, media based catalog, type 2
-	StreamSM2P uint32 = 0x32504D53 // set map, media based catalog (variant)
+	StreamSM2P uint32 = 0x32504D53 // 'SMP2' — Backup Exec Set Map variant (see docs/catalog.md). Kept under the SM2P name for compatibility; StreamSMP2 aliases it.
+	StreamSMP2       = StreamSM2P
 
 	StreamADAT uint32 = 0x54414441 // NT data
 	StreamNTEA uint32 = 0x4145544E // NT extended attributes
@@ -550,7 +551,7 @@ func StreamTypeName(t uint32) string {
 	case StreamMAP2:
 		return "MAP2"
 	case StreamSM2P:
-		return "SM2P"
+		return "SMP2"
 	case StreamFDD2:
 		return "FDD2"
 	case StreamADAT:

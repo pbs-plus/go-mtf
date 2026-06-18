@@ -123,9 +123,10 @@ type Reader struct {
 
 	// Media Based Catalog: raw payloads captured from the ESET's TFDD/TSMP (or
 	// FDD2/MAP2) streams, and the lazily-parsed catalog built from them.
-	catFDDraw []byte
-	catSMPraw []byte
-	catalog   *Catalog
+	catFDDraw      []byte
+	catSMPraw      []byte
+	catSMPStreamID uint32 // stream ID of the captured Set Map (for plugin dispatch)
+	catalog        *Catalog
 
 	scratch [4096]byte
 }
