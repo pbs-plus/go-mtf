@@ -720,6 +720,14 @@ func (r *Reader) streamNext() error {
 	}
 	r.streamOff = probeStreamHeader(r.blk, aligned)
 	r.readStreamHeader()
+	// Validate the stream header checksum matching the probe position.
+	// If the checksum was validated during probing, verify it matches;
+	// if neither offset validated (fallback), check anyway — all stream
+	// headers on real media carry checksums and a mismatch means garbage.
+	if !streamChecksumValid(r.blk, int(r.streamOff)) {
+		return fmt.Errorf("mtf: corrupt stream header at offset %d: checksum mismatch (streamType=%d): %w",
+			r.abspos, r.streamType, io.ErrUnexpectedEOF)
+	}
 	if os.Getenv("MTF_DEBUG") != "" {
 		fmt.Fprintf(os.Stderr, "[mtf] stream type=%d len=%d off=%d abspos=%d flbread=%d did=%d\n", r.streamType, r.streamLen, r.streamOff, r.abspos, r.flbread, r.streamDid)
 	}
@@ -861,7 +869,7 @@ func (r *Reader) Next() (*Block, error) {
 			}
 			r.cur = h
 			if err := r.materializeStreams(h); err != nil {
-				return nil, err
+				return nil, r.endOrError(err)
 			}
 			if r.sparse {
 				r.finishSparse(h)
