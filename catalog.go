@@ -1,9 +1,7 @@
 package mtf
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/pbs-plus/go-mtf/becatalog"
@@ -636,8 +634,9 @@ const (
 	eotmLastESETPBAOff = 0x34 // UINT64: Last ESET PBA
 )
 
-// isSetMapStream reports whether a 4-byte stream ID denotes a Set Map stream
-// (Type 1 TSMP, Type 2 MAP2, or the Backup Exec SM2P variant).
+// isSetMapStream reports whether a 4-byte stream ID denotes a Set Map
+// stream: the spec's TSMP (Type 1) or MAP2 (Type 2), or the Backup Exec SMP2
+// variant.
 func isSetMapStream(id uint32) bool {
 	return id == StreamTSMP || id == StreamMAP2 || id == StreamSM2P
 }
@@ -733,18 +732,9 @@ func ReadSetMap(tape Tape) (*SetMap, error) {
 	return nil, nil // no Set Map stream header in range
 }
 
-// readFullBlock reads one physical block into dst via the Tape interface,
-// returning the record length. It surfaces filemark (ErrFilemark) and
-// end-of-data (io.EOF) as errors since neither yields data.
+// readFullBlock reads one physical block into dst via the Tape interface.
 func readFullBlock(tape Tape, dst []byte) (int, error) {
-	n, err := tape.ReadBlock(dst)
-	if err != nil {
-		if errors.Is(err, ErrFilemark) || errors.Is(err, io.EOF) {
-			return 0, err
-		}
-		return 0, err
-	}
-	return n, nil
+	return tape.ReadBlock(dst)
 }
 
 // readStreamPayload assembles a stream's data payload given the first block

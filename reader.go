@@ -546,43 +546,21 @@ func (r *Reader) seekToByte(target int64) error {
 	return nil
 }
 
-// captureSsetAnchor records the PBA anchor for the current Data Set. It is
-// called once scanStart has identified the MTF_SSET DBLK by reading its
-// common header (dbCommonSize bytes) from the current physical block. The
-// SSET's own physical block address is r.curBlockPBA (captured by fillBlock
-// before the block was read), and its block-start byte position is
-// abspos - blockOff (blockOff bytes of the block have been consumed). Per
-// spec §3.4.2 the SSET is block-aligned, so this pair anchors the §3.4.3
-// FLA→PBA seek calculation within the Data Set, where PBAs are sequential and
-// uniformly physSize bytes apart.
-//
-// The anchor is only meaningful for sources whose PBAs are device-native and
-// therefore NOT simply bytepos/physSize (a real tape drive via DriveTape: the
-// Media Header + filemark before the SSET mean PBA 0 != byte 0, and filemarks
-// occupy PBA slots without bytes). For byte-derived sources (SliceTape,
-// fileTape) the legacy target/physSize seek math is exact and the anchor is
-// left disabled. A source opts in by implementing nativePBASource.
+// captureSsetAnchor records the PBA anchor for the current Data Set, called
+// once scanStart has identified the MTF_SSET DBLK. The SSET's own physical
+// block address is r.curBlockPBA (captured by fillBlock before the block was
+// read) and its block-start byte position is abspos - blockOff. Per spec §3.4.2
+// the SSET is block-aligned, so this pair anchors the §3.4.3 FLA→PBA seek
+// calculation within the Data Set.
 func (r *Reader) captureSsetAnchor() {
 	r.ssetAbsPos = r.abspos - int64(r.blockOff)
-	r.ssetPBA = -1
-	if ns, ok := r.src.(nativePBASource); ok && ns.NativePBA() && r.curBlockPBA >= 0 {
+	if r.curBlockPBA >= 0 {
 		r.ssetPBA = r.curBlockPBA
+	} else {
+		r.ssetPBA = -1
 	}
 }
 
-// nativePBASource is implemented by Tape sources whose physical block
-// addresses are assigned by the device and are independent of byte offset
-// (a real SCSI/LTO drive). Such sources need the §3.4.3 SSET-anchored seek
-// calculation. Byte-derived sources (SliceTape, fileTape) return false and
-// use the legacy origin-relative seek math, which is exact for them.
-type nativePBASource interface {
-	NativePBA() bool
-}
-
-// envNoSeek (set from MTF_NOSEEK) disables the SeekBlock fast-skip path in
-// skipStreamData, forcing read-discard. Diagnostic; used by integration tests
-// to prove the seek and read-discard paths agree.
-var envNoSeek = os.Getenv("MTF_NOSEEK") != ""
 func (r *Reader) skipStreamData(n int64) error {
 	if n == 0 {
 		return nil
@@ -599,21 +577,13 @@ func (r *Reader) skipStreamData(n int64) error {
 			r.wrapFlbread()
 			return nil
 		}
-		// Seek across blocks (MTSEEK on tape) only when the skip is large
-		// enough to justify a hardware LOCATE + read-forward — at least one
-		// physical block. For smaller skips the per-seek overhead (LOCATE +
-		// back-read to the target byte) exceeds simply streaming the bytes, so
-		// fall through to read-discard. This keeps seek mode winning for the
-		// §3.4.3 fast-retrieval case (jumping over a file's large data streams)
-		// without penalising metadata-dense regions full of tiny streams.
-		if !envNoSeek && n >= int64(r.physSize) {
-			if err := r.seekToByte(target); err == nil {
-				r.abspos = target
-				r.flbread += uint32(n)
-				r.streamDid += n
-				r.wrapFlbread()
-				return nil
-			}
+		// Seek across blocks (MTSEEK on tape) via the §3.4.3 SSET-anchored path.
+		if err := r.seekToByte(target); err == nil {
+			r.abspos = target
+			r.flbread += uint32(n)
+			r.streamDid += n
+			r.wrapFlbread()
+			return nil
 		}
 	}
 	for n > 0 {

@@ -200,22 +200,20 @@ func NewDriveTape(d *tapedrive.Drive) *DriveTape { return &DriveTape{d: d} }
 // and translates the boundary errors to mtf's convention. A data block is
 // returned as (n, nil); a filemark as (0, ErrFilemark); end of recorded data
 // as (0, io.EOF). The caller's dst must be sized for the drive's largest
-// record (use maxTapeBlock, or ReadBlock from a sized scratch buffer).
+// record (use maxTapeBlock).
 func (t *DriveTape) ReadBlock(dst []byte) (int, error) {
-	n, err := t.d.ReadBlockInto(dst)
-	if err == nil {
-		return n, nil
+	b, err := t.d.ReadBlock()
+	if err != nil {
+		switch {
+		case errors.Is(err, io.EOF):
+			return 0, ErrFilemark
+		case errors.Is(err, tapedrive.ErrEndOfData):
+			return 0, io.EOF
+		default:
+			return 0, err
+		}
 	}
-	switch {
-	case errors.Is(err, io.EOF):
-		// go-tapedrive: a filemark was crossed.
-		return 0, ErrFilemark
-	case errors.Is(err, tapedrive.ErrEndOfData):
-		// go-tapedrive: end of recorded data (two filemarks).
-		return 0, io.EOF
-	default:
-		return n, err
-	}
+	return copy(dst, b), nil
 }
 
 // SeekBlock implements [Tape], positioning the drive at a physical block
@@ -234,11 +232,6 @@ func (t *DriveTape) EOM() error { return t.d.EOM() }
 
 // Rewind rewinds the drive to beginning of tape.
 func (t *DriveTape) Rewind() error { return t.d.Rewind() }
-
-// NativePBA marks DriveTape as a source whose PBAs are device-native and
-// independent of byte offset. The Reader uses this to select the §3.4.3
-// SSET-anchored seek calculation instead of the byte-derived fallback.
-func (t *DriveTape) NativePBA() bool { return true }
 
 // Close closes the underlying drive, satisfying io.Closer so [Reader.Close]
 // releases the device.
