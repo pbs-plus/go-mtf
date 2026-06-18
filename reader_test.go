@@ -445,6 +445,12 @@ func (n *nonSeeker) SeekBlock(block int64) error {
 	return errors.New("nonSeeker: seeking not supported")
 }
 
+// TellBlock is unsupported, mirroring a source that cannot report position;
+// the Reader then falls back to medium-relative seek math.
+func (n *nonSeeker) TellBlock() (int64, error) {
+	return 0, errors.New("nonSeeker: tell not supported")
+}
+
 // TestSeekAndNonSeekPathsEqual extracts every file twice — once from a
 // seekable source (bytes.Reader) and once from a non-seekable source — and
 // asserts the content and per-file sizes are identical. This guards the seek

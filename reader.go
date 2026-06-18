@@ -32,6 +32,16 @@ type Reader struct {
 	abspos  int64  // absolute position in the underlying stream
 	strType uint8  // string encoding for the current block
 
+	// PBA anchor for the current Data Set, captured when the MTF_SSET DBLK is
+	// read. ssetPBA is the live physical block address (from Tape.TellBlock) of
+	// the block containing the SSET; ssetAbsPos is abspos at that same point.
+	// Per MTF §3.4.3, seeks within the Data Set are anchored here, not at the
+	// medium origin: ReqPBA = SSET_PBA + (target - SSET_abspos)/physSize.
+	// ssetPBA < 0 means unavailable (TellBlock failed); the Reader then falls
+	// back to the legacy origin-relative block math.
+	ssetPBA    int64
+	ssetAbsPos int64
+
 	streamOff       uint32 // offset of the current stream header within blk
 	streamLen       int64  // total length of the current stream's data
 	streamDid       int64  // bytes of current stream data consumed so far
@@ -469,6 +479,20 @@ func (r *Reader) wrapFlbread() {
 // MTF is designed for (spec §3.4.3).
 // seekToByte repositions the byte stream at target using [Tape.SeekBlock],
 // then discards the intra-block remainder. abspos ends equal to target.
+//
+// PBA derivation follows MTF §3.4.3: the seek is anchored at the current
+// Data Set's SSET block, whose live physical block address (ssetPBA) and
+// absolute byte position (ssetAbsPos) were captured when the SSET was read.
+// Within a Data Set, physical blocks are sequential and (for this medium)
+// uniformly physSize bytes, so:
+//
+//	PBA = ssetPBA + (target - ssetAbsPos) / physSize
+//
+// Anchoring at SSET (not the medium origin) is essential: the Media Header
+// (TAPE DBLK + SPAD + filemark) precedes the SSET and its byte-to-PBA mapping
+// differs, so a medium-origin anchor yields wrong PBAs and lands the head at
+// the wrong block. If no SSET anchor is available (ssetPBA < 0, e.g. TellBlock
+// unsupported), the legacy medium-relative math is used as a best effort.
 func (r *Reader) seekToByte(target int64) error {
 	if r.physSize == 0 {
 		return errors.New("mtf: cannot seek: physical block size unknown")
@@ -476,7 +500,12 @@ func (r *Reader) seekToByte(target int64) error {
 	if target < 0 {
 		return errors.New("mtf: negative seek position")
 	}
-	block := target / int64(r.physSize)
+	var block int64
+	if r.ssetPBA >= 0 {
+		block = r.ssetPBA + (target-r.ssetAbsPos)/int64(r.physSize)
+	} else {
+		block = target / int64(r.physSize)
+	}
 	if err := r.src.SeekBlock(block); err != nil {
 		return err
 	}
@@ -484,7 +513,11 @@ func (r *Reader) seekToByte(target int64) error {
 	r.blockOff = 0
 	r.peek = r.peek[:0]
 	r.pendingErr = nil
-	r.abspos = block * int64(r.physSize)
+	if r.ssetPBA >= 0 {
+		r.abspos = r.ssetAbsPos + (block-r.ssetPBA)*int64(r.physSize)
+	} else {
+		r.abspos = block * int64(r.physSize)
+	}
 	for r.abspos < target {
 		want := min(target-r.abspos, int64(len(r.scratch)))
 		n, err := r.read(r.scratch[:want])
@@ -498,6 +531,36 @@ func (r *Reader) seekToByte(target int64) error {
 	return nil
 }
 
+// captureSsetAnchor records the PBA anchor for the current Data Set at the
+// moment the MTF_SSET DBLK is about to be parsed. abspos already points at the
+// SSET's first byte; TellBlock gives the source's current block address.
+//
+// The anchor is only meaningful for sources whose PBAs are device-native and
+// therefore NOT simply bytepos/physSize (e.g. a real tape drive via DriveTape,
+// where the Media Header before the SSET means PBA 0 != byte 0). For sources
+// whose PBAs are byte-derived (SliceTape, fileTape), the legacy
+// target/physSize seek math is exact and the anchor is left disabled.
+//
+// A source opts into native-PBA anchoring by implementing nativePBASource.
+func (r *Reader) captureSsetAnchor() {
+	r.ssetAbsPos = r.abspos
+	r.ssetPBA = -1
+	if ns, ok := r.src.(nativePBASource); ok && ns.NativePBA() {
+		if pba, err := r.src.TellBlock(); err == nil {
+			r.ssetPBA = pba
+		}
+	}
+}
+
+// nativePBASource is implemented by Tape sources whose physical block
+// addresses are assigned by the device and are independent of byte offset
+// (a real SCSI/LTO drive). Such sources need the §3.4.3 SSET-anchored seek
+// calculation. Byte-derived sources (SliceTape, fileTape) return false and
+// use the legacy origin-relative seek math, which is exact for them.
+type nativePBASource interface {
+	NativePBA() bool
+}
+
 func (r *Reader) skipStreamData(n int64) error {
 	if n == 0 {
 		return nil
@@ -508,14 +571,22 @@ func (r *Reader) skipStreamData(n int64) error {
 		// just advance the offset — cheaper than a tape LOCATE.
 		if rel := target - r.abspos; rel >= 0 && r.blockOff+int(rel) <= len(r.blockBuf) {
 			r.blockOff += int(rel)
-		} else if err := r.seekToByte(target); err != nil {
-			return err
+			r.abspos = target
+			r.flbread += uint32(n)
+			r.streamDid += n
+			r.wrapFlbread()
+			return nil
 		}
-		r.abspos = target
-		r.flbread += uint32(n)
-		r.streamDid += n
-		r.wrapFlbread()
-		return nil
+		// Seek across blocks (MTSEEK on tape). Fall back to read-discard if the
+		// source cannot seek — safe because a failed SeekBlock leaves the
+		// position unchanged for the built-in sources.
+		if err := r.seekToByte(target); err == nil {
+			r.abspos = target
+			r.flbread += uint32(n)
+			r.streamDid += n
+			r.wrapFlbread()
+			return nil
+		}
 	}
 	for n > 0 {
 		chunk := min(n, int64(len(r.scratch)))
@@ -846,7 +917,9 @@ func (r *Reader) Next() (*Block, error) {
 		case dbTAPE:
 			// A TAPE block seen mid-stream is a continuation media header when
 			// spanning; otherwise the initial header. Adopt its logical block
-			// size, advance past it, and expose it as a new medium.
+			// size, advance past it, and expose it as a new medium. Reset the
+			// Data-Set seek anchor until the next SSET captures a fresh one.
+			r.ssetPBA = -1
 			if err := r.parseTape(); err != nil {
 				return nil, err
 			}
@@ -855,6 +928,7 @@ func (r *Reader) Next() (*Block, error) {
 			}
 			return r.setBlock(KindMedia), nil
 		case dbSSET:
+			r.captureSsetAnchor()
 			if err := r.parseSet(); err != nil {
 				return nil, err
 			}
