@@ -87,10 +87,10 @@ func TestSpecStreamFileSystemAttributes(t *testing.T) {
 		got  uint16
 		want uint16
 	}{
-		{"STREAM_MODIFIED_BY_READ", 0x0001, 0x0001},  // BIT0
-		{"STREAM_CONTAINS_SECURITY", 0x0002, 0x0002}, // BIT1
-		{"STREAM_IS_NON_PORTABLE", 0x0004, 0x0004},   // BIT2
-		{"STREAM_IS_SPARSE", StreamFSSparse, 0x0008}, // BIT3
+		{"STREAM_MODIFIED_BY_READ", StreamFSModifiedByRead, 0x0001},    // BIT0
+		{"STREAM_CONTAINS_SECURITY", StreamFSContainsSecurity, 0x0002}, // BIT1
+		{"STREAM_IS_NON_PORTABLE", StreamFSNonPortable, 0x0004},        // BIT2
+		{"STREAM_IS_SPARSE", StreamFSSparse, 0x0008},                   // BIT3
 	}
 	for _, c := range cases {
 		if c.got != c.want {
@@ -107,12 +107,13 @@ func TestSpecStreamMediaFormatAttributes(t *testing.T) {
 		got  uint16
 		want uint16
 	}{
-		{"STREAM_CONTINUE", StreamMediaContinue, 0x0001},     // BIT0
-		{"STREAM_ENCRYPTED", StreamMediaEncrypted, 0x0008},   // BIT3
-		{"STREAM_COMPRESSED", StreamMediaCompressed, 0x0010}, // BIT4
-		// Spec also defines STREAM_VARIABLE (BIT1), STREAM_VAR_END (BIT2),
-		// STREAM_CHECKSUMED (BIT5), STREAM_EMBEDDED_LENGTH (BIT6).
-		{"STREAM_CHECKSUMED", 0x0020, 0x0020}, // BIT5
+		{"STREAM_CONTINUE", StreamMediaContinue, 0x0001},              // BIT0
+		{"STREAM_VARIABLE", StreamMediaVariable, 0x0002},              // BIT1
+		{"STREAM_VAR_END", StreamMediaVarEnd, 0x0004},                 // BIT2
+		{"STREAM_ENCRYPTED", StreamMediaEncrypted, 0x0008},            // BIT3
+		{"STREAM_COMPRESSED", StreamMediaCompressed, 0x0010},          // BIT4
+		{"STREAM_CHECKSUMED", StreamMediaChecksumed, 0x0020},          // BIT5
+		{"STREAM_EMBEDDED_LENGTH", StreamMediaEmbeddedLength, 0x0040}, // BIT6
 	}
 	for _, c := range cases {
 		if c.got != c.want {
@@ -157,6 +158,7 @@ func TestSpecStreamIDs(t *testing.T) {
 		{"SMSD", StreamSMSD, "SMSD"},
 		// OS/2 (Table 22).
 		{"OACL", StreamOACL, "OACL"},
+		{"O2EA", StreamO2EA, "O2EA"},
 		// Macintosh (Table 23).
 		{"MRSC", StreamMRSC, "MRSC"},
 		{"MPRV", StreamMPRV, "MPRV"},

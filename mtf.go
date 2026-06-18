@@ -439,25 +439,47 @@ const (
 )
 
 // Stream File System Attributes (MTF_STREAM_HDR Stream File System
-// Attributes field, stream header offset 4).
+// Attributes field, stream header offset 4). See MTF spec Table 17.
 const (
+	// StreamFSModifiedByRead (STREAM_MODIFIED_BY_READ, BIT0) indicates the data
+	// changed after reading; verify operations should not be attempted.
+	StreamFSModifiedByRead uint16 = 0x0001
+	// StreamFSContainsSecurity (STREAM_CONTAINS_SECURITY, BIT1) indicates the
+	// stream contains security information.
+	StreamFSContainsSecurity uint16 = 0x0002
+	// StreamFSNonPortable (STREAM_IS_NON_PORTABLE, BIT2) indicates the data can
+	// only be restored to the same OS it was saved from.
+	StreamFSNonPortable uint16 = 0x0004
 	// StreamFSSparse (STREAM_IS_SPARSE, BIT3) marks a stream whose data is
 	// sparse. See MTF spec section 6.1.
 	StreamFSSparse uint16 = 0x0008
 )
 
 // Stream Media Format Attributes (MTF_STREAM_HDR Stream Media Format
-// Attributes field, stream header offset 6).
+// Attributes field, stream header offset 6). See MTF spec Table 18.
 const (
 	// StreamMediaContinue (STREAM_CONTINUE, BIT0) marks a stream whose data is a
 	// continuation of a stream split across media at EOM. Its Stream Length holds
 	// only the remaining (unwritten) portion and its data begins at the next
 	// Format Logical Block boundary. See MTF spec section 6.1.
 	StreamMediaContinue uint16 = 0x0001
+	// StreamMediaVariable (STREAM_VARIABLE, BIT1) marks a stream whose data is
+	// segmented into variable-length pieces (section 6.3). Each segment has this
+	// bit set; the last segment additionally sets StreamMediaVarEnd.
+	StreamMediaVariable uint16 = 0x0002
+	// StreamMediaVarEnd (STREAM_VAR_END, BIT2) marks the last segment of a
+	// variable-length stream (section 6.3). When set, this is the final piece.
+	StreamMediaVarEnd uint16 = 0x0004
 	// StreamMediaEncrypted (STREAM_ENCRYPTED, BIT3) marks an encrypted stream.
 	StreamMediaEncrypted uint16 = 0x0008
 	// StreamMediaCompressed (STREAM_COMPRESSED, BIT4) marks a compressed stream.
 	StreamMediaCompressed uint16 = 0x0010
+	// StreamMediaChecksumed (STREAM_CHECKSUMED, BIT5) marks a stream that is
+	// followed by a CSUM checksum stream (section 6.2.1.4 / Figure 19).
+	StreamMediaChecksumed uint16 = 0x0020
+	// StreamMediaEmbeddedLength (STREAM_EMBEDDED_LENGTH, BIT6) is an obsolete
+	// bit provided for backwards compatibility with pre-1.00a drafts (section 6.1).
+	StreamMediaEmbeddedLength uint16 = 0x0040
 )
 
 // Stream data type identifiers. These are the four-byte stream type codes read
@@ -496,6 +518,7 @@ const (
 	StreamSMSD uint32 = 0x44534D53 // Netware
 
 	StreamOACL uint32 = 0x4C43414F // OS/2 ACL
+	StreamO2EA uint32 = 0x4145324F // OS/2 EA (spec Table 22)
 
 	StreamMRSC uint32 = 0x4353524D // Macintosh resource
 	StreamMPRV uint32 = 0x5652504D // Macintosh private
@@ -560,6 +583,8 @@ func StreamTypeName(t uint32) string {
 		return "SMSD"
 	case StreamOACL:
 		return "OACL"
+	case StreamO2EA:
+		return "O2EA"
 	case StreamMRSC:
 		return "MRSC"
 	case StreamMPRV:
