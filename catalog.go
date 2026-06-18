@@ -1,6 +1,9 @@
 package mtf
 
 import (
+	"errors"
+	"fmt"
+	"io"
 	"time"
 
 	"github.com/pbs-plus/go-mtf/becatalog"
@@ -519,4 +522,144 @@ func parseSetMapEntry(rec []byte) (entry SetMapEntry, length int, ok bool) {
 	entry.Volumes = vols
 	length = cur
 	return entry, length, true
+}
+
+// Field offsets used by catalog-directed access (spec §5.2.9 EOTM, §5.2.8 ESET).
+const (
+	eotmLastESETPBAOff = 0x34 // UINT64: Last ESET PBA
+)
+
+// isSetMapStream reports whether a 4-byte stream ID denotes a Set Map stream
+// (Type 1 TSMP, Type 2 MAP2, or the Backup Exec SM2P variant).
+func isSetMapStream(id uint32) bool {
+	return id == StreamTSMP || id == StreamMAP2 || id == StreamSM2P
+}
+
+// ReadSetMap returns the cumulative Media Based Catalog Set Map from the final
+// data set on the medium, using the spec's catalog-directed access path
+// (§3.3.2.2 / §5.2.9 / §7.3.1): the trailing MTF_EOTM block stores the PBA of
+// the last MTF_ESET; the Set Map stream is physical-block-aligned and is the
+// last catalog stream preceding that ESET (Figure 24). This lets a caller
+// enumerate every data set (name, SSETPBA, FLA, file count, size) in a handful
+// of block reads near end-of-media instead of walking every file forward.
+//
+// tape must be a positionable source (DriveTape, SliceTape, fileTape). It is
+// positioned at end of recorded data on entry (DriveTape via EOM; for others
+// the caller should seek to the end first) and is left positioned at the Set
+// Map block on success (callers doing further I/O should Rewind/SeekBlock).
+//
+// Returns (nil, nil) if no Set Map is present — e.g. a data-only continuation
+// cartridge (the EOTM's MTF_NO_ESET_PBA / MTF_INVALID_ESET_PBA attribute bits
+// are set, or no Set Map stream header is found in the trailing blocks).
+// Callers should fall back to a forward walk (Reader.Next) in that case.
+func ReadSetMap(tape Tape) (*SetMap, error) {
+	end, err := tape.TellBlock()
+	if err != nil {
+		return nil, fmt.Errorf("mtf: ReadSetMap: tape must report position: %w", err)
+	}
+	if end <= 2 {
+		return nil, nil // nothing to read
+	}
+
+	// 1. EOTM is the data block immediately before the trailing filemark + EOD.
+	eotmPBA := end - 2
+	if err := tape.SeekBlock(eotmPBA); err != nil {
+		return nil, fmt.Errorf("mtf: ReadSetMap: seek EOTM %d: %w", eotmPBA, err)
+	}
+	eotm := make([]byte, maxTapeBlock)
+	n, err := readFullBlock(tape, eotm)
+	if err != nil {
+		return nil, fmt.Errorf("mtf: ReadSetMap: read EOTM: %w", err)
+	}
+	eotm = eotm[:n]
+	if blockType(eotm) != dbEOTM {
+		return nil, fmt.Errorf("mtf: ReadSetMap: block at %d is %q, not EOTM", eotmPBA, blockType(eotm))
+	}
+	// EOTM attribute bits 16/17 flag an absent/invalid ESET PBA (spec Table 3).
+	attrs := u32(eotm, 0x04)
+	const (
+		noESETPBABit      = 1 << 16 // MTF_NO_ESET_PBA
+		invalidESETPBABit = 1 << 17 // MTF_INVALID_ESET_PBA
+	)
+	if attrs&(noESETPBABit|invalidESETPBABit) != 0 {
+		return nil, nil // no usable catalog on this medium
+	}
+	lastESET := int64(u64(eotm, eotmLastESETPBAOff))
+
+	// 2. The EOTM's Last ESET PBA names the filemark trailing the last ESET
+	// (spec Figure 24: [ESET DBLK][filemark]). The ESET DBLK is the preceding
+	// block. The Set Map stream is the last catalog stream before that ESET,
+	// physical-block-aligned. Scan back a few blocks for a Set Map stream header.
+	for delta := int64(1); delta <= 4; delta++ {
+		p := lastESET - delta
+		if p < 0 {
+			break
+		}
+		if err := tape.SeekBlock(p); err != nil {
+			continue
+		}
+		b := make([]byte, maxTapeBlock)
+		nn, rerr := readFullBlock(tape, b)
+		if rerr != nil || nn < streamHeaderSize {
+			continue
+		}
+		b = b[:nn]
+		id := u32(b, 0)
+		if !isSetMapStream(id) {
+			continue
+		}
+		// Found the Set Map stream header. Parse its payload.
+		streamLen := int64(u64(b, stLengthOff))
+		payload, perr := readStreamPayload(tape, b, streamLen)
+		if perr != nil {
+			return nil, fmt.Errorf("mtf: ReadSetMap: read Set Map stream at %d: %w", p, perr)
+		}
+		return parseSetMap(payload), nil
+	}
+	return nil, nil // no Set Map stream header in range
+}
+
+// readFullBlock reads one physical block into dst via the Tape interface,
+// returning the record length. It surfaces filemark (ErrFilemark) and
+// end-of-data (io.EOF) as errors since neither yields data.
+func readFullBlock(tape Tape, dst []byte) (int, error) {
+	n, err := tape.ReadBlock(dst)
+	if err != nil {
+		if errors.Is(err, ErrFilemark) || errors.Is(err, io.EOF) {
+			return 0, err
+		}
+		return 0, err
+	}
+	return n, nil
+}
+
+// readStreamPayload assembles a stream's data payload given the first block
+// (containing the 22-byte stream header) and the declared stream length. It
+// reads additional blocks as needed. The payload is the stream data after the
+// header; on tape the stream header is physical-block-aligned and its data
+// follows (possibly across blocks).
+func readStreamPayload(tape Tape, first []byte, streamLen int64) ([]byte, error) {
+	if streamLen <= 0 {
+		return nil, nil
+	}
+	// Skip the 22-byte stream header in the first block; the rest of that
+	// block (if any) is the start of the payload.
+	hdr := int64(streamHeaderSize)
+	payload := make([]byte, 0, streamLen)
+	if int64(len(first)) > hdr {
+		payload = append(payload, first[hdr:]...)
+	}
+	for int64(len(payload)) < streamLen {
+		b := make([]byte, maxTapeBlock)
+		n, err := readFullBlock(tape, b)
+		if err != nil {
+			// Use whatever we have; parseSetMap tolerates short input.
+			break
+		}
+		payload = append(payload, b[:n]...)
+	}
+	if int64(len(payload)) > streamLen {
+		payload = payload[:streamLen]
+	}
+	return payload, nil
 }
