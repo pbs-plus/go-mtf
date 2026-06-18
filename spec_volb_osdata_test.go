@@ -32,6 +32,7 @@ func TestSpecVOLBNTOSData(t *testing.T) {
 	b[dbOSDataOff+1] = byte(len(osData) >> 8)
 	b[dbOSDataOff+2] = byte(osOff)
 	b[dbOSDataOff+3] = byte(osOff >> 8)
+	setChecksum(b)
 
 	var buf bytes.Buffer
 	buf.Write(buildTape())

@@ -69,6 +69,7 @@ func TestSurfaceTapeFields(t *testing.T) {
 	copy(b[passPos:], []byte("secret\x00"))
 	putU16(b, tapePasswdOff, 7)         // size (incl. NUL)
 	putU16(b, tapePasswdOff+2, passPos) // position
+	setChecksum(b)
 
 	r := NewReader(bytes.NewReader(b))
 	_, _ = r.Next() // drives parseTape on the TAPE block
@@ -109,6 +110,7 @@ func TestSurfaceSetFields(t *testing.T) {
 	copy(b[passPos:], []byte("setpass\x00"))
 	putU16(b, ssetPasswdOff, 8)
 	putU16(b, ssetPasswdOff+2, passPos)
+	setChecksum(b)
 
 	r := NewReader(bytes.NewReader(b))
 	_, _ = r.Next() // scans SSET and sets r.set
@@ -213,6 +215,7 @@ func TestStreamFlagsParsing(t *testing.T) {
 	preamble[streamStart+stMediaAttrOff] = byte(StreamMediaCompressed) // set COMPRESSED bit
 	preamble[streamStart+stCompressOff] = 0x01                         // algorithm id low byte
 	putU64(preamble, streamStart+stLengthOff, 4)
+	setChecksum(preamble)
 
 	var buf bytes.Buffer
 	buf.Write(buildTape())

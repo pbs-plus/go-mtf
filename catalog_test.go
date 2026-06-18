@@ -74,6 +74,7 @@ func buildMBCArchiveWithFDD(fdd []byte) []byte {
 	tape[44] = mbcStrASCII
 	binary.LittleEndian.PutUint16(tape[64:], 1)
 	binary.LittleEndian.PutUint16(tape[84:], 512)
+	setChecksum(tape)
 	out = append(out, tape...)
 
 	// SSET.
@@ -83,6 +84,7 @@ func buildMBCArchiveWithFDD(fdd []byte) []byte {
 	binary.LittleEndian.PutUint16(sset[62:], 1)
 	binary.LittleEndian.PutUint64(sset[80:], 512)
 	sset[97] = 1
+	setChecksum(sset)
 	out = append(out, sset...)
 
 	// FDD payload is supplied by the caller.
@@ -121,6 +123,7 @@ func buildMBCArchiveWithFDD(fdd []byte) []byte {
 	eset[44] = mbcStrASCII
 	binary.LittleEndian.PutUint16(eset[8:], 88)
 	binary.LittleEndian.PutUint16(eset[78:], 1)
+	setChecksum(eset)
 	tfddHdr := make([]byte, 22)
 	binary.LittleEndian.PutUint32(tfddHdr[0:], StreamTFDD)
 	binary.LittleEndian.PutUint64(tfddHdr[8:], uint64(len(fdd)))

@@ -76,6 +76,7 @@ func buildFileWithStreams(name string, streams ...[]byte) []byte {
 	putString(preamble, fileNameOff, nameOff, name)
 	dt := encodeDateTime(time.Date(2005, 6, 1, 12, 0, 0, 0, time.Local))
 	copy(preamble[fileMTimeOff:], dt[:])
+	setChecksum(preamble)
 	var out bytes.Buffer
 	out.Write(preamble)
 	out.Write(buildStreams(len(preamble), streams...))
@@ -92,6 +93,7 @@ func buildDirbWithStreams(id uint32, name string, streams ...[]byte) []byte {
 	writeCommon(preamble, dbDIRB, uint16(start))
 	putU32(preamble, dirbIDOff, id)
 	putString(preamble, dirbNameOff, nameOff, name)
+	setChecksum(preamble)
 	var out bytes.Buffer
 	out.Write(preamble)
 	out.Write(buildStreams(len(preamble), streams...))
@@ -202,10 +204,13 @@ func TestStreamLessPackedDBLK(t *testing.T) {
 	const flb = testFLBSize
 	sset := buildSSET()
 	putU16(sset, dbOffOff, flb) // points at VOLB
+	setChecksum(sset)
 	volb := buildVOLB("D:")
 	putU16(volb, dbOffOff, flb) // points at DIRB
+	setChecksum(volb)
 	dirb := buildDirbWithStreams(1, "dir")
 	putU16(dirb, dbOffOff, flb) // points at FILE
+	setChecksum(dirb)
 
 	content := []byte("hello")
 	file := buildFileWithStreams("f.txt", streamDescriptorCksum(StreamSTAN, content))
@@ -511,6 +516,7 @@ func TestLargeCatalogStreamEndToEnd(t *testing.T) {
 	copy(eset[0:4], "ESET")
 	eset[44] = 1 // ASCII string type
 	binary.LittleEndian.PutUint16(eset[8:], 88)
+	setChecksum(eset)
 
 	tfddHdr := make([]byte, streamHeaderSize)
 	binary.LittleEndian.PutUint32(tfddHdr[stTypeOff:], StreamTFDD)

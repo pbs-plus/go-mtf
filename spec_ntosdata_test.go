@@ -44,6 +44,7 @@ func setNTOSData(b []byte, version uint8, area []byte) {
 	b[dbOSDataOff+1] = byte(len(area) >> 8)
 	b[dbOSDataOff+2] = byte(osOff)
 	b[dbOSDataOff+3] = byte(osOff >> 8)
+	setChecksum(b)
 }
 
 // ntFileBlock returns a FILE block (with a terminal SPAD stream) named name.

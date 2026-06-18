@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 )
@@ -60,6 +61,7 @@ func buildTape() []byte {
 	putU16(b, tapeFLBSizeOff, testFLBSize)
 	dt := encodeDateTime(time.Date(2005, 6, 1, 12, 30, 45, 0, time.Local))
 	copy(b[tapeCTimeOff:], dt[:])
+	setChecksum(b)
 	return b
 }
 
@@ -71,6 +73,7 @@ func buildSSET() []byte {
 	b[ssetMinorOff] = 0
 	dt := encodeDateTime(time.Date(2005, 6, 1, 12, 31, 0, 0, time.Local))
 	copy(b[ssetCTimeOff:], dt[:])
+	setChecksum(b)
 	return b
 }
 
@@ -80,6 +83,7 @@ func buildVOLB(device string) []byte {
 	putString(b, volbDeviceOff, volbCTimeOff+6, device)
 	dt := encodeDateTime(time.Date(2005, 6, 1, 12, 31, 5, 0, time.Local))
 	copy(b[volbCTimeOff:], dt[:])
+	setChecksum(b)
 	return b
 }
 
@@ -593,22 +597,23 @@ func TestGarbageAfterESET(t *testing.T) {
 	}
 }
 
-// TestChecksumGatedOnSawESET verifies that a block with a bad checksum BEFORE
-// any ESET is still parsed (writers that do not compute checksums must work
-// during the normal walk). Only after sawESET does a bad checksum terminate the
-// walk with io.EOF.
-func TestChecksumGatedOnSawESET(t *testing.T) {
-	// Build a TAPE block with a deliberately wrong checksum (simulate a writer
-	// that does not compute checksums).
+// TestChecksumValidationAlwaysOn verifies that the MTF_DB_HDR Header
+// Checksum is validated on every block, not just after ESET. A block with a
+// deliberately corrupted checksum is rejected with a descriptive error,
+// whether or not a data set has ended. This catches mid-walk desyncs (e.g.
+// a block LOCATE landing at the wrong position on tape) immediately rather
+// than cascading into a confusing stream-length error.
+func TestChecksumValidationAlwaysOn(t *testing.T) {
+	// Build a TAPE block with a deliberately wrong checksum.
 	tape := buildTape()
 	tape[dbChecksumOff] ^= 0xFF // corrupt the checksum
 	sset := buildSSET()
 	r := NewReader(bytes.NewReader(append(tape, sset...)))
-	blk, err := r.Next()
-	if err != nil {
-		t.Fatalf("Next before ESET should not fail on bad checksum: %v", err)
+	_, err := r.Next()
+	if err == nil {
+		t.Fatal("Next should fail on bad checksum before ESET")
 	}
-	if blk.Kind != KindMedia {
-		t.Errorf("first block kind = %v, want KindMedia", blk.Kind)
+	if !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("expected checksum mismatch error, got: %v", err)
 	}
 }

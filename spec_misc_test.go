@@ -204,6 +204,7 @@ func TestSpecDIRBPathInStream(t *testing.T) {
 func TestSpecCFILGracefulSkip(t *testing.T) {
 	cfil := make([]byte, dbCommonSize)
 	writeCommon(cfil, dbCFIL, 0)
+	setChecksum(cfil)
 
 	var buf bytes.Buffer
 	buf.Write(buildTape())
@@ -259,6 +260,7 @@ func TestSpecESPBGracefulSkip(t *testing.T) {
 	// ESPB is a full block whose common header type is 'ESPB'.
 	espb := make([]byte, testFLBSize)
 	writeCommon(espb, dbESPB, 0)
+	setChecksum(espb)
 	buf.Write(espb)
 	buf.Write(buildESET())
 
