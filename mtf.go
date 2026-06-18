@@ -332,10 +332,13 @@ const (
 	// are repeated on a continuation medium to restore context after an End of
 	// Media (EOTM). See MTF spec section 8 (End Of Media Processing).
 	AttrContinuation uint32 = 0x00000001
-	// AttrCompression indicates compression may be active.
-	AttrCompression uint32 = 0x00000002
-	// AttrEOSAtEOM indicates End Of Medium was hit during end-of-set processing.
-	AttrEOSAtEOM uint32 = 0x00000004
+	// AttrCompression (MTF_COMPRESSION, BIT2) indicates compression may be active.
+	// Per MTF spec Table 3 the common attributes reserve BIT1 and define
+	// compression at BIT2 (NTBackup/MTF SDK value 0x00000004).
+	AttrCompression uint32 = 0x00000004
+	// AttrEOSAtEOM (MTF_EOS_AT_EOM, BIT3) indicates End Of Medium was hit during
+	// end-of-set processing.
+	AttrEOSAtEOM uint32 = 0x00000008
 )
 
 // Windows file attributes (dwFileAttributes). These are the standard
