@@ -545,6 +545,20 @@ func (r *Reader) scanStart() error {
 		r.flbsize = uint32(u16(r.blk, tapeFLBSizeOff))
 	}
 	r.strType = u8(r.blk, dbStrTypeOff)
+
+	// Validate the MTF_DB_HDR Header Checksum (spec "Header Checksum"): a
+	// 16-bit word-wise XOR over bytes 0..49 must equal the stored checksum at
+	// bytes 50..51. A mismatch means the block is corrupt or the read position
+	// has desynchronized (e.g. a block LOCATE landed at the wrong block on
+	// tape). The spec says "if the checksum does not match use error recovery to
+	// try and find the next DBLK"; once a data set has ended (sawESET) anything
+	// with a bad checksum is past the real archive, so the caller sees a clean
+	// io.EOF via endOrError. Before any ESET the check is skipped so writers
+	// that do not compute checksums still work.
+	if r.sawESET && !checksumValid(r.blk) {
+		return fmt.Errorf("mtf: corrupt block header at offset %d: checksum mismatch (type=%s): %w",
+			r.abspos, blockType(r.blk), io.ErrUnexpectedEOF)
+	}
 	return nil
 }
 

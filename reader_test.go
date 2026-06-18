@@ -90,6 +90,7 @@ func buildDIRB(id uint32, name string, mtime time.Time) []byte {
 	putString(b, dirbNameOff, dirbNameOff+4, name)
 	dt := encodeDateTime(mtime)
 	copy(b[dirbMTimeOff:], dt[:])
+	setChecksum(b)
 	return b
 }
 
@@ -113,6 +114,7 @@ func buildFILE(id, dirid uint32, name string, mtime time.Time, content []byte) [
 	copy(preamble[fileMTimeOff:], dt[:])
 	putU32(preamble, streamStart+stTypeOff, StreamSTAN)
 	putU64(preamble, streamStart+stLengthOff, uint64(len(content)))
+	setChecksum(preamble)
 
 	var out bytes.Buffer
 	out.Write(preamble)
@@ -143,7 +145,16 @@ func buildESET() []byte {
 	writeCommon(b, dbESET, 0)
 	putU16(b, esetSeqOff, 1)
 	putU16(b, esetSetOff, 1)
+	setChecksum(b)
 	return b
+}
+
+// setChecksum computes and stores the MTF_DB_HDR Header Checksum (word-wise
+// XOR over bytes 0..49, stored at bytes 50..51) on the block buffer.
+func setChecksum(b []byte) {
+	sum := commonChecksum(b)
+	b[dbChecksumOff] = byte(sum)
+	b[dbChecksumOff+1] = byte(sum >> 8)
 }
 
 func putU16(b []byte, off, v int) {
@@ -547,5 +558,57 @@ func TestAppendDecodeString(t *testing.T) {
 	dst := appendDecodeString([]byte("vol/"), u16, 0, len(u16), 0, '/')
 	if string(dst) != "vol/hello" {
 		t.Errorf("append = %q, want %q", dst, "vol/hello")
+	}
+}
+
+// TestGarbageAfterESET verifies that garbage data following a complete data
+// set (ESET) produces a clean io.EOF instead of a confusing "stream data length
+// out of range" error. On real tapes residual recording or a desynchronized
+// block LOCATE can position the read at non-MTF data past the last ESET; the
+// MTF_DB_HDR Header Checksum (spec "Header Checksum") detects this and, per
+// the spec's error-recovery guidance, terminates the walk cleanly once a data
+// set has already completed.
+func TestGarbageAfterESET(t *testing.T) {
+	data := buildArchive()
+	// Append 256 bytes of non-MTF garbage (random-looking data that does not
+	// form a valid MTF_DB_HDR with a correct checksum).
+	garbage := bytes.Repeat([]byte{0xAB}, 256)
+	data = append(data, garbage...)
+
+	r := NewReader(bytes.NewReader(data))
+	count := 0
+	for {
+		blk, err := r.Next()
+		if err != nil {
+			if err != io.EOF {
+				t.Fatalf("expected io.EOF after ESET+garbage, got: %v", err)
+			}
+			break
+		}
+		count++
+		_ = blk
+	}
+	if count == 0 {
+		t.Fatal("walked 0 blocks; expected at least TAPE+SSET+ESET")
+	}
+}
+
+// TestChecksumGatedOnSawESET verifies that a block with a bad checksum BEFORE
+// any ESET is still parsed (writers that do not compute checksums must work
+// during the normal walk). Only after sawESET does a bad checksum terminate the
+// walk with io.EOF.
+func TestChecksumGatedOnSawESET(t *testing.T) {
+	// Build a TAPE block with a deliberately wrong checksum (simulate a writer
+	// that does not compute checksums).
+	tape := buildTape()
+	tape[dbChecksumOff] ^= 0xFF // corrupt the checksum
+	sset := buildSSET()
+	r := NewReader(bytes.NewReader(append(tape, sset...)))
+	blk, err := r.Next()
+	if err != nil {
+		t.Fatalf("Next before ESET should not fail on bad checksum: %v", err)
+	}
+	if blk.Kind != KindMedia {
+		t.Errorf("first block kind = %v, want KindMedia", blk.Kind)
 	}
 }

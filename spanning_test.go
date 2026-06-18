@@ -19,6 +19,7 @@ func buildTapeAttr(attr uint32, flbsize int) []byte {
 	putU16(b, tapeFLBSizeOff, flbsize)
 	dt := encodeDateTime(time.Date(2005, 6, 1, 12, 0, 0, 0, time.Local))
 	copy(b[tapeCTimeOff:], dt[:])
+	setChecksum(b)
 	return b
 }
 
@@ -30,6 +31,7 @@ func buildSSETAttr(attr uint32) []byte {
 	b[ssetMajorOff] = 3
 	dt := encodeDateTime(time.Date(2005, 6, 1, 12, 1, 0, 0, time.Local))
 	copy(b[ssetCTimeOff:], dt[:])
+	setChecksum(b)
 	return b
 }
 
@@ -40,6 +42,7 @@ func buildVOLBAttr(attr uint32, device string) []byte {
 	putString(b, volbDeviceOff, volbCTimeOff+6, device)
 	dt := encodeDateTime(time.Date(2005, 6, 1, 12, 2, 0, 0, time.Local))
 	copy(b[volbCTimeOff:], dt[:])
+	setChecksum(b)
 	return b
 }
 
@@ -51,6 +54,7 @@ func buildDIRBAttr(attr uint32, id uint32, name string) []byte {
 	putString(b, dirbNameOff, dirbNameOff+4, name)
 	dt := encodeDateTime(time.Date(2005, 6, 1, 12, 5, 0, 0, time.Local))
 	copy(b[dirbMTimeOff:], dt[:])
+	setChecksum(b)
 	return b
 }
 
@@ -60,6 +64,7 @@ func buildEOTM() []byte {
 	writeCommon(b, dbEOTM, 0)
 	// FLA and Control Block ID must be zero for a valid EOTM (used to validate
 	// the block during mid-stream probing).
+	setChecksum(b)
 	return b
 }
 
@@ -90,6 +95,7 @@ func splitFileFirst(id, dirid uint32, name string, mtime time.Time, fullData []b
 	copy(preamble[fileMTimeOff:], dt[:])
 	putU32(preamble, streamStart+stTypeOff, StreamSTAN)
 	putU64(preamble, streamStart+stLengthOff, uint64(len(fullData))) // FULL length
+	setChecksum(preamble)
 	var out bytes.Buffer
 	out.Write(preamble)
 	out.Write(fullData[:keepData])
@@ -115,8 +121,9 @@ func continuationFile(id uint32, name string, mtime time.Time, remain []byte, n 
 	putU32(preamble, streamStart+stTypeOff, StreamSTAN)
 	putU16(preamble, streamStart+stMediaAttrOff, int(StreamMediaContinue))
 	putU64(preamble, streamStart+stLengthOff, uint64(len(remain))) // remaining length
-	blk := padToFLB(preamble, testFLBSize)                         // FILE block fills one FLB
-	data := padToFLB(remain[:n], testFLBSize)                      // data at next FLB boundary
+	setChecksum(preamble)
+	blk := padToFLB(preamble, testFLBSize)    // FILE block fills one FLB
+	data := padToFLB(remain[:n], testFLBSize) // data at next FLB boundary
 	return append(blk, data...)
 }
 
