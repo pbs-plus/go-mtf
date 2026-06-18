@@ -2,33 +2,36 @@ package mtf
 
 import "strings"
 
-// UnixMode returns a best-effort Unix permission mode derived from the Windows
-// file attributes stored in [Header.Attributes]. The mapping follows common
-// conventions:
+// UnixMode returns a best-effort Unix permission mode derived from the
+// MTF descriptor-block attributes stored in [Header.Attributes] (Tables 13/14,
+// which are always present and use the MTF bit layout). The mapping follows
+// common conventions:
 //
 //   - Directories get mode 0755 (readable/traversable by all, writable by owner).
 //   - Regular files get mode 0644 (readable by all, writable by owner), or 0755
-//     if the archive bit is set (a heuristic for executables on Unix-origin backups).
-//   - The readonly bit clears the owner-write bit.
+//     if the modified ("archive") bit is set (a heuristic for executables on
+//     Unix-origin backups).
+//   - The read-only bit clears the owner-write bit.
 //   - The system bit is not mapped (Unix has no equivalent).
 //
-// For precise permissions, parse [Header.SecurityDescriptor] and extract the
-// DACL. The mode returned here is a reasonable default for migration tools that
-// need a starting point.
+// The MTF attributes are used because they are spec-defined for every archive
+// regardless of OS version, whereas [Header.WinAttributes] (the OS-specific
+// dwFileAttributes) is only populated for NT OS version 0/1. For precise
+// permissions, parse [Header.SecurityDescriptor] and extract the DACL.
 func (h *Header) UnixMode() uint32 {
 	switch h.Type {
 	case EntryDirectory:
 		m := uint32(0o755)
-		if h.Attributes&WinAttrReadOnly != 0 {
+		if h.Attributes&MTFAttrReadOnly != 0 {
 			m &^= 0o200 // clear owner-write
 		}
 		return m
 	case EntryFile:
 		m := uint32(0o644)
-		if h.Attributes&WinAttrArchive != 0 {
-			m = 0o755 // heuristic: archive bit → executable
+		if h.Attributes&MTFAttrModified != 0 {
+			m = 0o755 // heuristic: archive/modified bit → executable
 		}
-		if h.Attributes&WinAttrReadOnly != 0 {
+		if h.Attributes&MTFAttrReadOnly != 0 {
 			m &^= 0o200
 		}
 		return m

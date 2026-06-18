@@ -136,6 +136,43 @@ func tapepos(b []byte, off int) (size, pos uint16) {
 
 func blockType(b []byte) [4]byte { return [4]byte{b[0], b[1], b[2], b[3]} }
 
+// ntOSData parses the Windows NT OS-specific data area of a descriptor block
+// (OS ID 14, spec Structures 42/43). It returns the dwFileAttributes (offset
+// 0 of the OS-specific area) and the NT File Flags (offset 8). ok is false when
+// the block is not NT or the OS-specific area is too short.
+func ntOSData(b []byte) (winAttr, ntFlags uint32, ok bool) {
+	if u8(b, dbOSIDOff) != 14 {
+		return 0, 0, false
+	}
+	osSize, osOff := tapepos(b, dbOSDataOff)
+	base := int(osOff)
+	if osSize >= 4 && base+4 <= len(b) {
+		winAttr = u32(b, base)
+	}
+	if osSize >= 12 && base+12 <= len(b) {
+		ntFlags = u32(b, base+8)
+	}
+	return winAttr, ntFlags, true
+}
+
+// loadNTOSData ensures the reader's block buffer covers the OS-specific data
+// area, then parses the Windows NT OS-specific fields (OS ID 14, spec
+// Structures 42/43) via ntOSData. The descriptor block's fields may extend past
+// the minimum the caller already ensured, so the buffer is grown to cover the
+// OS-data area before it is read.
+func (r *Reader) loadNTOSData() (winAttr, ntFlags uint32, ok bool) {
+	if u8(r.blk, dbOSIDOff) != 14 {
+		return 0, 0, false
+	}
+	osSize, osOff := tapepos(r.blk, dbOSDataOff)
+	if need := int(osOff) + int(osSize); need > len(r.blk) {
+		if err := r.ensure(need); err != nil {
+			return 0, 0, false
+		}
+	}
+	return ntOSData(r.blk)
+}
+
 // commonChecksum returns the MTF common-block header checksum for the given
 // block: a 16-bit word-wise XOR over all MTF_DB_HDR fields except the checksum
 // field itself (bytes 0..49, i.e. 25 little-endian words). See MTF spec,

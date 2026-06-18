@@ -1274,12 +1274,11 @@ func (r *Reader) parseDirb() (*Header, error) {
 	h.Attributes = attr
 	h.BlockAttributes = u32(r.blk, dbAttrOff)
 	h.OSID = u8(r.blk, dbOSIDOff)
-	if h.OSID == 14 {
-		if osSize, osOff := tapepos(r.blk, dbOSDataOff); osSize >= 12 {
-			if int(osOff)+12 <= len(r.blk) {
-				h.NTFileFlags = u32(r.blk, int(osOff)+8)
-			}
-		}
+	// Parse Windows NT OS-specific data (OS ID 14, spec Structure 42): the
+	// dwFileAttributes at offset 0 and the NT File Flags at offset 8.
+	if win, flags, ok := r.loadNTOSData(); ok {
+		h.WinAttributes = win
+		h.NTFileFlags = flags
 	}
 	h.DisplayableSize = u64(r.blk, dbSizeOff)
 	h.IsHardLink = h.NTFileFlags&NTFileLinkFlag != 0
@@ -1386,13 +1385,11 @@ func (r *Reader) parseFile() (*Header, error) {
 	h.Attributes = u32(r.blk, fileAttrOff)
 	h.BlockAttributes = u32(r.blk, dbAttrOff)
 	h.OSID = u8(r.blk, dbOSIDOff)
-	// Parse NT File Flags from OS-specific data for Windows NT (OSID 14).
-	if h.OSID == 14 {
-		if osSize, osOff := tapepos(r.blk, dbOSDataOff); osSize >= 12 {
-			if int(osOff)+12 <= len(r.blk) {
-				h.NTFileFlags = u32(r.blk, int(osOff)+8)
-			}
-		}
+	// Parse Windows NT OS-specific data (OS ID 14, spec Structure 43): the
+	// dwFileAttributes at offset 0 and the NT File Flags at offset 8.
+	if win, flags, ok := r.loadNTOSData(); ok {
+		h.WinAttributes = win
+		h.NTFileFlags = flags
 	}
 	h.IsHardLink = h.NTFileFlags&NTFileLinkFlag != 0
 	h.DisplayableSize = u64(r.blk, dbSizeOff)

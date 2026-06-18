@@ -63,11 +63,21 @@ type Header struct {
 	// BirthTime is the birth time of the entry, if recorded. Only emitted by
 	// NT-based backups that populate the MTF birth-time field.
 	BirthTime time.Time
-	// Attributes is the block's type-specific attribute flags (the DBLK
-	// attributes field that follows the common header). For FILE entries this is
-	// the Windows dwFileAttributes field; for DIRB entries the directory
-	// attributes. Test individual bits with the [WinAttr] constants.
+	// Attributes is the MTF descriptor-block (DBLK) attributes field that
+	// follows the common header — Table 13 (DIRB) / Table 14 (FILE). It uses
+	// the MTF bit layout (READ_ONLY=BIT8, HIDDEN=BIT9, SYSTEM=BIT10,
+	// MODIFIED=BIT11, EMPTY/IN_USE=BIT16, PATH/NAME_IN_STREAM=BIT17,
+	// CORRUPT=BIT18), NOT the Win32 layout. Test individual bits with the
+	// [MTFAttr] constants. For the Windows FILE_ATTRIBUTE_* values use
+	// [Header.WinAttributes].
 	Attributes uint32
+	// WinAttributes is the Windows dwFileAttributes value (the
+	// FILE_ATTRIBUTE_* flags from the WIN32_FIND_DATA structure) loaded from
+	// the OS-specific data area of the DBLK for Windows NT entries (OS ID 14,
+	// spec Structures 42/43, offset 0). It is zero for non-NT entries or when
+	// the OS-specific data is absent. Test individual bits with the [WinAttr]
+	// constants; this is the source [Header.UnixMode] derives its mode from.
+	WinAttributes uint32
 	// NTFileFlags is the Windows NT file-specific flags from the OS-specific
 	// data section of a FILE DBLK (OSID 14). It is zero for non-NT entries.
 	// Test individual bits with the [NTFile] constants.
@@ -341,9 +351,39 @@ const (
 	AttrEOSAtEOM uint32 = 0x00000008
 )
 
-// Windows file attributes (dwFileAttributes). These are the standard
-// Win32 file attribute flags stored in the DBLK Attributes field for
-// FILE and DIRB entries when the OS ID is Windows.
+// MTF descriptor-block attributes (Table 13 DIRB / Table 14 FILE). These are
+// the bits of the DBLK Attributes field that follows the common header. DIRB
+// and FILE share the same bit positions for the flags below; the only
+// difference is the BIT16 meaning (DIRB_EMPTY vs FILE_IN_USE). Test these
+// against [Header.Attributes].
+const (
+	// MTFAttrReadOnly (READ_ONLY_BIT, BIT8) is set if the file/directory is
+	// marked read-only.
+	MTFAttrReadOnly uint32 = 0x00000100
+	// MTFAttrHidden (HIDDEN_BIT, BIT9) is set if hidden from the user.
+	MTFAttrHidden uint32 = 0x00000200
+	// MTFAttrSystem (SYSTEM_BIT, BIT10) is set if it is a system file/directory.
+	MTFAttrSystem uint32 = 0x00000400
+	// MTFAttrModified (MODIFIED_BIT / "archive" flag, BIT11) is set if the
+	// object has been modified.
+	MTFAttrModified uint32 = 0x00000800
+	// MTFAttrEmpty (DIRB_EMPTY_BIT, BIT16) is set if the directory contained no
+	// files or subdirectories. (FILE_IN_USE_BIT for FILE entries.)
+	MTFAttrEmpty uint32 = 0x00010000
+	// MTFAttrPathInStream (DIRB_PATH_IN_STREAM_BIT / FILE_NAME_IN_STREAM_BIT,
+	// BIT17) is set when the path/name is stored in a stream rather than the
+	// DBLK String Storage Area.
+	MTFAttrPathInStream uint32 = 0x00020000
+	// MTFAttrCorrupt (CORRUPT_BIT, BIT18) is set if the associated data could
+	// not be read.
+	MTFAttrCorrupt uint32 = 0x00040000
+)
+
+// Windows file attributes (dwFileAttributes). These are the standard Win32
+// FILE_ATTRIBUTE_* flags stored in the OS-specific data area of FILE/DIRB
+// descriptor blocks for Windows NT entries (OS ID 14, spec Structures 42/43).
+// They are NOT the DBLK Attributes field ([Header.Attributes]); test them
+// against [Header.WinAttributes].
 const (
 	WinAttrReadOnly   uint32 = 0x00000001 // FILE_ATTRIBUTE_READONLY
 	WinAttrHidden     uint32 = 0x00000002 // FILE_ATTRIBUTE_HIDDEN

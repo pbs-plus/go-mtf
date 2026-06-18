@@ -36,11 +36,11 @@ func TestUnixMode(t *testing.T) {
 		want uint32
 	}{
 		{"dir default", EntryDirectory, 0, 0o755},
-		{"dir readonly", EntryDirectory, WinAttrReadOnly, 0o555},
+		{"dir readonly", EntryDirectory, MTFAttrReadOnly, 0o555},
 		{"file default", EntryFile, 0, 0o644},
-		{"file archive", EntryFile, WinAttrArchive, 0o755},
-		{"file readonly", EntryFile, WinAttrReadOnly, 0o444},
-		{"file archive+readonly", EntryFile, WinAttrArchive | WinAttrReadOnly, 0o555},
+		{"file modified", EntryFile, MTFAttrModified, 0o755},
+		{"file readonly", EntryFile, MTFAttrReadOnly, 0o444},
+		{"file modified+readonly", EntryFile, MTFAttrModified | MTFAttrReadOnly, 0o555},
 	}
 	for _, tt := range tests {
 		h := &Header{Type: tt.typ, Attributes: tt.attr}
