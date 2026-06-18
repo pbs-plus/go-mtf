@@ -17,7 +17,7 @@ func main() {
 		return
 	}
 	defer func() { _ = f.Close() }()
-	r := mtf.NewReader(f)
+	r := mtf.NewReader(mtf.NewFileTape(f))
 	c, err := r.Census()
 	role := "?"
 	switch c.Role {

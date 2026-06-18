@@ -158,17 +158,17 @@ type mediumReader struct {
 
 func newSpannedReader(media [][]byte) *Reader {
 	mr := &mediumReader{media: media}
-	r := NewReader(bytes.NewReader(mr.media[0]))
+	r := NewReader(NewSliceTape(mr.media[0]))
 	mr.r = r
 	r.SetContinuation(mr.next)
 	return r
 }
-func (m *mediumReader) next(c Continuation) (io.Reader, error) {
+func (m *mediumReader) next(c Continuation) (Tape, error) {
 	m.cursor++
 	if m.cursor >= len(m.media) {
 		return nil, io.EOF
 	}
-	return bytes.NewReader(m.media[m.cursor]), nil
+	return NewSliceTape(m.media[m.cursor]), nil
 }
 
 // TestContinuationEvent verifies that the continuation callback receives an
@@ -198,10 +198,10 @@ func TestContinuationEvent(t *testing.T) {
 	m2.Write(buildESET())
 
 	var got Continuation
-	r := NewReader(bytes.NewReader(m1.Bytes()))
-	r.SetContinuation(func(c Continuation) (io.Reader, error) {
+	r := NewReader(NewSliceTape(m1.Bytes()))
+	r.SetContinuation(func(c Continuation) (Tape, error) {
 		got = c
-		return bytes.NewReader(m2.Bytes()), nil
+		return NewSliceTape(m2.Bytes()), nil
 	})
 	for {
 		blk, err := r.Next()
@@ -426,7 +426,7 @@ func TestSpanningNoContinuation(t *testing.T) {
 	m1.Write(splitFileFirst(10, 1, name, ft, full, keep))
 	m1.Write(buildEOTM())
 
-	r := NewReader(bytes.NewReader(m1.Bytes())) // no SetContinuation
+	r := NewReader(NewSliceTape(m1.Bytes())) // no SetContinuation
 	for {
 		blk, err := r.Next()
 		if err == io.EOF {

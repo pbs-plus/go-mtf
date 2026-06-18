@@ -46,7 +46,7 @@ func TestReaderVerifyChecksum(t *testing.T) {
 	tape[dbChecksumOff] = byte(sum)
 	tape[dbChecksumOff+1] = byte(sum >> 8)
 
-	r := NewReader(bytes.NewReader(tape))
+	r := NewReader(NewSliceTape(tape))
 	_, _ = r.Next() // scans the TAPE block
 	if !r.VerifyChecksum() {
 		s, c := r.Checksum()
@@ -71,7 +71,7 @@ func TestSurfaceTapeFields(t *testing.T) {
 	putU16(b, tapePasswdOff+2, passPos) // position
 	setChecksum(b)
 
-	r := NewReader(bytes.NewReader(b))
+	r := NewReader(NewSliceTape(b))
 	_, _ = r.Next() // drives parseTape on the TAPE block
 	tp := r.Tape()
 	if tp == nil {
@@ -112,7 +112,7 @@ func TestSurfaceSetFields(t *testing.T) {
 	putU16(b, ssetPasswdOff+2, passPos)
 	setChecksum(b)
 
-	r := NewReader(bytes.NewReader(b))
+	r := NewReader(NewSliceTape(b))
 	_, _ = r.Next() // scans SSET and sets r.set
 	s := r.Set()
 	if s == nil {
@@ -132,7 +132,7 @@ func TestSurfaceSetFields(t *testing.T) {
 // TestSurfaceESetFields verifies the ESET metadata is surfaced via ESet().
 func TestSurfaceESetFields(t *testing.T) {
 	data := buildArchive()
-	r := NewReader(bytes.NewReader(data))
+	r := NewReader(NewSliceTape(data))
 	for {
 		_, err := r.Next()
 		if err != nil {
@@ -154,7 +154,7 @@ func TestSurfaceESetFields(t *testing.T) {
 // Header: birth time, volume label, machine name, and displayable size.
 func TestSurfaceHeaderFields(t *testing.T) {
 	data := buildArchive()
-	r := NewReader(bytes.NewReader(data))
+	r := NewReader(NewSliceTape(data))
 	var sawFile, sawVol bool
 	for {
 		blk, err := r.Next()
@@ -243,7 +243,7 @@ func TestStreamFlagsParsing(t *testing.T) {
 	}
 	buf.Write(buildESET())
 
-	r := NewReader(bytes.NewReader(buf.Bytes()))
+	r := NewReader(NewSliceTape(buf.Bytes()))
 	var found bool
 	for {
 		blk, err := r.Next()

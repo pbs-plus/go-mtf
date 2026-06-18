@@ -40,7 +40,7 @@ func TestSpecVOLBNTOSData(t *testing.T) {
 	buf.Write(b)
 	buf.Write(buildESET())
 
-	r := NewReader(bytes.NewReader(buf.Bytes()))
+	r := NewReader(NewSliceTape(buf.Bytes()))
 	for {
 		blk, err := r.Next()
 		if err == io.EOF {
@@ -82,7 +82,7 @@ func TestSpecVOLBOSDataAbsentIsNotDRCandidate(t *testing.T) {
 	buf.Write(buildVOLB("D:"))
 	buf.Write(buildESET())
 
-	r := NewReader(bytes.NewReader(buf.Bytes()))
+	r := NewReader(NewSliceTape(buf.Bytes()))
 	for {
 		blk, err := r.Next()
 		if err == io.EOF {

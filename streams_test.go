@@ -180,7 +180,7 @@ func TestVendorPadStreamThenSTAN(t *testing.T) {
 	stan := streamDescriptorCksum(StreamSTAN, fileData)
 
 	arc := streamArchive(buildFileWithStreams("song.mp3", padStream, stan))
-	r := NewReader(bytes.NewReader(arc))
+	r := NewReader(NewSliceTape(arc))
 	var sawFile bool
 	for {
 		b, err := r.Next()
@@ -236,7 +236,7 @@ func TestStreamLessPackedDBLK(t *testing.T) {
 	buf.Write(file)
 	buf.Write(buildESET())
 
-	r := NewReader(bytes.NewReader(buf.Bytes()))
+	r := NewReader(NewSliceTape(buf.Bytes()))
 	var gotFile bool
 	for {
 		b, err := r.Next()
@@ -291,7 +291,7 @@ func TestMaterializeDirectoryMetadata(t *testing.T) {
 		streamDescriptor(StreamNACL, nacl),
 		streamDescriptor(StreamNTOI, ntoi),
 	)
-	r := NewReader(bytes.NewReader(streamArchive(dir)))
+	r := NewReader(NewSliceTape(streamArchive(dir)))
 	h := nextOfType(r, EntryDirectory)
 
 	if !bytes.Equal(h.SecurityDescriptor, nacl) {
@@ -311,7 +311,7 @@ func TestMaterializeFileMetadataAndContent(t *testing.T) {
 		streamDescriptor(StreamNTEA, ntea),
 		streamDescriptor(StreamSTAN, content),
 	)
-	r := NewReader(bytes.NewReader(streamArchive(file)))
+	r := NewReader(NewSliceTape(streamArchive(file)))
 	h := nextOfType(r, EntryFile)
 
 	if !bytes.Equal(h.ExtendedAttributes, ntea) {
@@ -339,7 +339,7 @@ func TestExtraStreamsCaptured(t *testing.T) {
 		streamDescriptor(StreamSTAN, content),
 		streamDescriptor(StreamCSUM, postCSUM),
 	)
-	r := NewReader(bytes.NewReader(streamArchive(file)))
+	r := NewReader(NewSliceTape(streamArchive(file)))
 	h := nextOfType(r, EntryFile)
 
 	if got := readAll(t, r); !bytes.Equal(got, content) {
@@ -375,7 +375,7 @@ func TestHeaderOnlySkipsStreamData(t *testing.T) {
 		streamDescriptor(StreamCSUM, []byte("C")),
 	)
 
-	build := func() *Reader { return NewReader(bytes.NewReader(streamArchive(file))) }
+	build := func() *Reader { return NewReader(NewSliceTape(streamArchive(file))) }
 
 	// header-only: Streams must be empty and content skipped without error.
 	r := build()
@@ -400,7 +400,7 @@ func TestMaterializeAdvancesAcrossEntries(t *testing.T) {
 	content := []byte("ABC")
 	file1 := buildFileWithStreams("a.txt", streamDescriptor(StreamSTAN, content))
 	file2 := buildFileWithStreams("b.txt", streamDescriptor(StreamSTAN, content))
-	r := NewReader(bytes.NewReader(streamArchive(file1, file2)))
+	r := NewReader(NewSliceTape(streamArchive(file1, file2)))
 
 	seen := 0
 	for {
@@ -442,7 +442,7 @@ func TestMaterializeSparseFile(t *testing.T) {
 		sparDescriptor(0, block0),
 		sparDescriptor(8, block1),
 	)
-	r := NewReader(bytes.NewReader(streamArchive(file)))
+	r := NewReader(NewSliceTape(streamArchive(file)))
 	h := nextOfType(r, EntryFile)
 
 	if !h.Sparse {
@@ -554,7 +554,7 @@ func TestLargeCatalogStreamEndToEnd(t *testing.T) {
 	out.Write(eset)
 	out.Write(bytes.Repeat([]byte{0}, 512)) // trailing zero block / clean EOF
 
-	r := NewReader(bytes.NewReader(out.Bytes()))
+	r := NewReader(NewSliceTape(out.Bytes()))
 	for {
 		_, err := r.Next()
 		if err == io.EOF {

@@ -11,14 +11,20 @@ import (
 //
 // Use [Next] to advance to the next entry and [Read] to read the standard data
 // of the current file entry. The API intentionally mirrors archive/tar.
-// When the source implements io.Seeker (e.g. an *os.File or a SCSI-generic
-// tape reader) the Reader skips file data via Seek instead of reading it,
-// the fast-retrieval path MTF is designed for (spec §3.4.3).
+// The source is a [Tape]: a block-oriented medium (an LTO drive through the
+// st driver, a .bkf file, or an in-memory buffer). Filemarks are explicit
+// ([ErrFilemark]) rather than hidden behind io.EOF, and file data is skipped
+// via SeekBlock (MTSEEK on tape) — the fast-retrieval path MTF is designed
+// for (spec §3.4.3).
 
 type Reader struct {
-	r      io.Reader
-	seeker io.Seeker // non-nil when the source supports seeking; skipStreamData seeks
-	closer io.Closer
+	src          Tape      // block-oriented source (tape drive, file, or buffer)
+	closer       io.Closer // non-nil when tape implements io.Closer
+	blockBuf     []byte    // bytes of the current physical block
+	blockOff     int       // read offset within blockBuf
+	physSize     int       // physical block size (from the first ReadBlock); 0 until known
+	pendingErr   error     // deferred error (e.g. io.EOF) surfaced once blockBuf drains
+	scratchBlock []byte    // maxTapeBlock destination for Tape.ReadBlock
 
 	blk     []byte // header / stream-header buffer for the current block
 	flbsize uint32 // logical block size (from the TAPE descriptor)
@@ -56,9 +62,9 @@ type Reader struct {
 	cwd    string
 	cwdID  uint32
 
-	nextMedia func(Continuation) (io.Reader, error) // supplies the next physical medium
-	mediaSeq  int                                   // number of continuation media consumed
-	peek      []byte                                // read-ahead bytes pending delivery (probe buffer)
+	nextMedia func(Continuation) (Tape, error) // supplies the next physical medium
+	mediaSeq  int                              // number of continuation media consumed
+	peek      []byte                           // read-ahead bytes pending delivery (probe buffer)
 
 	// hitEOTM is set when an End-Of-Tape-Media marker is encountered but no
 	// continuation medium is registered, meaning the logical stream was
@@ -113,18 +119,18 @@ func Open(name string) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewReader(f), nil
+	return NewReader(NewFileTape(f)), nil
 }
 
-// NewReader returns a new Reader reading from r. When r implements io.Seeker
-// (for example an *os.File or a SCSI-generic tape reader), the reader skips
-// data streams by seeking rather than reading, which is dramatically faster
-// when only block headers are needed (listing, cataloging) on large archives
-// — the fast-retrieval path MTF is designed for (spec §3.4.3).
-func NewReader(r io.Reader) *Reader {
-	rd := &Reader{r: r}
-	if s, ok := r.(io.Seeker); ok {
-		rd.seeker = s
+// NewReader returns a new Reader reading from the given [Tape]. The Reader
+// skips a file's data streams via [Tape.SeekBlock] rather than reading them,
+// which is dramatically faster when only block headers are needed (listing,
+// cataloging) on large archives — the fast-retrieval path MTF is designed
+// for (spec §3.4.3).
+func NewReader(t Tape) *Reader {
+	rd := &Reader{src: t, scratchBlock: make([]byte, maxTapeBlock)}
+	if c, ok := t.(io.Closer); ok {
+		rd.closer = c
 	}
 	return rd
 }
@@ -317,17 +323,67 @@ func (r *Reader) Checksum() (stored, computed uint16) {
 // read drains any pending read-ahead (probe bytes) then reads from the
 // underlying stream into p. It returns the number of bytes read and any error.
 // Callers are responsible for accounting (flbread/abspos) for the returned bytes.
+// fillBlock reads the next physical block from the tape into scratchBlock and
+// exposes it via blockBuf. Filemarks ([ErrFilemark]) separate recorded
+// sections and are skipped transparently; io.EOF ends the stream. A block
+// returned together with an error (e.g. the final block before end of data)
+// is delivered first and the error is held in pendingErr until blockBuf drains.
+func (r *Reader) fillBlock() error {
+	for {
+		n, err := r.src.ReadBlock(r.scratchBlock)
+		if n > 0 {
+			r.blockBuf = r.scratchBlock[:n]
+			r.blockOff = 0
+			if r.physSize == 0 {
+				r.physSize = n
+			}
+			if err != nil {
+				r.pendingErr = err
+			}
+			return nil
+		}
+		if errors.Is(err, ErrFilemark) {
+			continue // filemark separates recorded sections; skip transparently
+		}
+		if err != nil {
+			return err // io.EOF (end of recorded data) or a real I/O error
+		}
+		return io.EOF // zero bytes, no error: treat defensively as end of data
+	}
+}
+
 func (r *Reader) read(p []byte) (int, error) {
-	var n int
+	if len(p) == 0 {
+		return 0, nil
+	}
+	total := 0
 	if len(r.peek) > 0 {
-		n = copy(p, r.peek)
-		r.peek = r.peek[n:]
+		total = copy(p, r.peek)
+		r.peek = r.peek[total:]
+		if total == len(p) {
+			return total, nil
+		}
 	}
-	if n == len(p) {
-		return n, nil
+	for total < len(p) {
+		if r.blockOff >= len(r.blockBuf) {
+			if r.pendingErr != nil {
+				if total > 0 {
+					return total, nil
+				}
+				return 0, r.pendingErr
+			}
+			if err := r.fillBlock(); err != nil {
+				if total > 0 {
+					return total, nil
+				}
+				return 0, err
+			}
+		}
+		n := copy(p[total:], r.blockBuf[r.blockOff:])
+		r.blockOff += n
+		total += n
 	}
-	nr, err := r.r.Read(p[n:])
-	return n + nr, err
+	return total, nil
 }
 
 // readFull reads exactly len(p) bytes, draining read-ahead first. It mirrors
@@ -411,16 +467,52 @@ func (r *Reader) wrapFlbread() {
 // with a single Seek rather than reading the bytes, which makes header-only
 // walks (listing, Census) fast on large archives — the fast-retrieval path
 // MTF is designed for (spec §3.4.3).
-func (r *Reader) skipStreamData(n int64) error {
-	if r.seeker != nil {
-		target := r.abspos + n
-		if _, err := r.seeker.Seek(target, io.SeekStart); err != nil {
+// seekToByte repositions the byte stream at target using [Tape.SeekBlock],
+// then discards the intra-block remainder. abspos ends equal to target.
+func (r *Reader) seekToByte(target int64) error {
+	if r.physSize == 0 {
+		return errors.New("mtf: cannot seek: physical block size unknown")
+	}
+	if target < 0 {
+		return errors.New("mtf: negative seek position")
+	}
+	block := target / int64(r.physSize)
+	if err := r.src.SeekBlock(block); err != nil {
+		return err
+	}
+	r.blockBuf = nil
+	r.blockOff = 0
+	r.peek = r.peek[:0]
+	r.pendingErr = nil
+	r.abspos = block * int64(r.physSize)
+	for r.abspos < target {
+		want := min(target-r.abspos, int64(len(r.scratch)))
+		n, err := r.read(r.scratch[:want])
+		if n > 0 {
+			r.abspos += int64(n)
+		}
+		if err != nil {
 			return err
 		}
-		// Discard read-ahead: those bytes were read from the pre-seek position.
-		r.peek = r.peek[:0]
-		r.flbread += uint32(n)
+	}
+	return nil
+}
+
+func (r *Reader) skipStreamData(n int64) error {
+	if n == 0 {
+		return nil
+	}
+	if r.physSize > 0 {
+		target := r.abspos + n
+		// Fast path: the target lies inside the currently buffered block, so
+		// just advance the offset — cheaper than a tape LOCATE.
+		if rel := target - r.abspos; rel >= 0 && r.blockOff+int(rel) <= len(r.blockBuf) {
+			r.blockOff += int(rel)
+		} else if err := r.seekToByte(target); err != nil {
+			return err
+		}
 		r.abspos = target
+		r.flbread += uint32(n)
 		r.streamDid += n
 		r.wrapFlbread()
 		return nil
@@ -490,7 +582,7 @@ func (r *Reader) scanStart() error {
 	r.flbread = 0
 	for len(r.blk) < dbCommonSize {
 		want := dbCommonSize - len(r.blk)
-		nr, err := r.r.Read(r.scratch[:want])
+		nr, err := r.read(r.scratch[:want])
 		if nr > 0 {
 			r.blk = append(r.blk, r.scratch[:nr]...)
 			r.flbread += uint32(nr)
@@ -542,7 +634,7 @@ func (r *Reader) scanNext() error {
 		remaining := int64(r.flbsize - r.flbread)
 		for remaining > 0 {
 			chunk := min(remaining, int64(len(r.scratch)))
-			nr, err := io.ReadFull(r.r, r.scratch[:chunk])
+			nr, err := r.readFull(r.scratch[:chunk])
 			if nr > 0 {
 				r.flbread += uint32(nr)
 				r.abspos += int64(nr)
@@ -972,36 +1064,16 @@ func (r *Reader) skipRemainingData() error {
 	if r.dataRem <= 0 {
 		return nil
 	}
-	// Seekable sources skip in a single forward Seek. Sources that report a
-	// finite end (file-backed) first check whether the remaining data fits
-	// before EOF; if it crosses EOF a mid-stream EOTM (media spanning) is in
-	// play and the careful per-boundary probe path below handles it. Sources
-	// whose SeekEnd is unsupported (tape, where SeekEnd would force a full
-	// pass to end-of-data) take the forward skip directly — spanning is not
-	// handled on a single-medium tape walk and a mid-stream EOTM surfaces as a
-	// read error on the next descriptor.
-	if r.seeker != nil {
-		if end, err := r.seeker.Seek(0, io.SeekEnd); err == nil {
-			if r.abspos+r.dataRem <= end {
-				if err := r.skipStreamData(r.dataRem); err != nil {
-					return err
-				}
-				r.dataRem = 0
-				return nil
-			}
-			// Data crosses EOF: re-position to where we were and probe carefully.
-			if _, err := r.seeker.Seek(r.abspos, io.SeekStart); err != nil {
-				return err
-			}
-		} else {
-			// SeekEnd unsupported (tape): position is unchanged, forward-skip
-			// the remaining data directly.
-			if err := r.skipStreamData(r.dataRem); err != nil {
-				return err
-			}
-			r.dataRem = 0
-			return nil
+	// No continuation medium registered: the remaining data cannot span to
+	// another tape, so skip it in one shot — SeekBlock on a tape (MTSEEK), a
+	// byte seek on a file. Spanning is handled only when a continuation is
+	// registered, via the careful per-boundary probe loop below.
+	if r.nextMedia == nil {
+		if err := r.skipStreamData(r.dataRem); err != nil {
+			return err
 		}
+		r.dataRem = 0
+		return nil
 	}
 	for r.dataRem > 0 {
 		if r.atFLBBoundary() {

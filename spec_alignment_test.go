@@ -43,7 +43,7 @@ func TestSpecStreamAlignmentFactor(t *testing.T) {
 		streamDescriptorCksum(StreamNTOI, ntoiData),
 		streamDescriptorCksum(StreamSTAN, stanData),
 	))
-	r := NewReader(bytes.NewReader(arc))
+	r := NewReader(NewSliceTape(arc))
 	h := nextOfType(r, EntryFile)
 
 	if got, want := string(h.SecurityDescriptor), string(naclData); got != want {
@@ -82,7 +82,7 @@ func TestSpecStreamAlignmentNoPadWhenAligned(t *testing.T) {
 	stan := streamDescriptorCksum(StreamSTAN, stanData)
 
 	arc := streamArchive(buildFileWithStreams("nopad.txt", nacl, stan))
-	r := NewReader(bytes.NewReader(arc))
+	r := NewReader(NewSliceTape(arc))
 	h := nextOfType(r, EntryFile)
 
 	if got, want := string(h.SecurityDescriptor), string(naclData); got != want {
@@ -109,7 +109,7 @@ func TestSpecCSUMFollowsChecksumedStream(t *testing.T) {
 		streamDescriptorCksum(StreamCSUM, csumPayload),
 		streamDescriptorCksum(StreamSTAN, []byte("payload")),
 	))
-	r := NewReader(bytes.NewReader(arc))
+	r := NewReader(NewSliceTape(arc))
 	h := nextOfType(r, EntryFile)
 
 	if got := string(h.SecurityDescriptor); got != string(naclData) {
@@ -147,7 +147,7 @@ func TestSpecSparseStreamOffsetsIncluded(t *testing.T) {
 		ext0,
 		ext4096,
 	))
-	r := NewReader(bytes.NewReader(arc))
+	r := NewReader(NewSliceTape(arc))
 	h := nextOfType(r, EntryFile)
 
 	if !h.Sparse {
@@ -329,7 +329,7 @@ func TestSpecCompressedStreamDecompresses(t *testing.T) {
 	raw := cmpFrame(plain) // MTF_CMP_HDR + payload
 
 	arc := streamArchive(buildFileWithStreams("compressed.bin", compressedStan(raw, true, false)))
-	r := NewReader(bytes.NewReader(arc))
+	r := NewReader(NewSliceTape(arc))
 	h := nextOfType(r, EntryFile)
 
 	if !h.Compressed {

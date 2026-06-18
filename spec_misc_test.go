@@ -51,7 +51,7 @@ func TestSpecSSETBackupTypeAttributes(t *testing.T) {
 	buf.Write(b)
 	buf.Write(buildESET())
 
-	r := NewReader(bytes.NewReader(buf.Bytes()))
+	r := NewReader(NewSliceTape(buf.Bytes()))
 	for {
 		blk, err := r.Next()
 		if err == io.EOF {
@@ -86,7 +86,7 @@ func TestSpecTimeZoneField(t *testing.T) {
 		buf.Write(buildTape())
 		buf.Write(b)
 		buf.Write(buildESET())
-		r := NewReader(bytes.NewReader(buf.Bytes()))
+		r := NewReader(NewSliceTape(buf.Bytes()))
 		for {
 			blk, err := r.Next()
 			if err == io.EOF {
@@ -121,7 +121,7 @@ func TestSpecMTFVersionFields(t *testing.T) {
 	buf.Write(sset)
 	buf.Write(buildESET())
 
-	r := NewReader(bytes.NewReader(buf.Bytes()))
+	r := NewReader(NewSliceTape(buf.Bytes()))
 	var sawTape, sawSet bool
 	for {
 		blk, err := r.Next()
@@ -173,7 +173,7 @@ func TestSpecDIRBPathInStream(t *testing.T) {
 	buf.Write(b)
 	buf.Write(buildESET())
 
-	r := NewReader(bytes.NewReader(buf.Bytes()))
+	r := NewReader(NewSliceTape(buf.Bytes()))
 	for {
 		blk, err := r.Next()
 		if err == io.EOF {
@@ -221,7 +221,7 @@ func TestSpecCFILGracefulSkip(t *testing.T) {
 	buf.Write(buildDIRB(2, "post", time.Date(2005, 1, 2, 0, 0, 0, 0, time.Local)))
 	buf.Write(buildESET())
 
-	r := NewReader(bytes.NewReader(buf.Bytes()))
+	r := NewReader(NewSliceTape(buf.Bytes()))
 	var dirs []string
 	for {
 		blk, err := r.Next()
@@ -264,7 +264,7 @@ func TestSpecESPBGracefulSkip(t *testing.T) {
 	buf.Write(espb)
 	buf.Write(buildESET())
 
-	r := NewReader(bytes.NewReader(buf.Bytes()))
+	r := NewReader(NewSliceTape(buf.Bytes()))
 	var sawEset bool
 	for {
 		blk, err := r.Next()

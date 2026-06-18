@@ -53,7 +53,7 @@ func TestSpecImpliedPrecedence(t *testing.T) {
 	buf.Write(buildFILE(12, 3, "f3", fileMT, []byte("c")))
 	buf.Write(buildESET())
 
-	r := NewReader(bytes.NewReader(buf.Bytes()))
+	r := NewReader(NewSliceTape(buf.Bytes()))
 	type entry struct {
 		typ  EntryType
 		name string
@@ -107,7 +107,7 @@ func TestSpecDirectoryPathSeparators(t *testing.T) {
 	buf.Write(b)
 	buf.Write(buildESET())
 
-	r := NewReader(bytes.NewReader(buf.Bytes()))
+	r := NewReader(NewSliceTape(buf.Bytes()))
 	for {
 		blk, err := r.Next()
 		if err != nil {
@@ -136,7 +136,7 @@ func TestSpecRootDirectory(t *testing.T) {
 	buf.Write(b)
 	buf.Write(buildESET())
 
-	r := NewReader(bytes.NewReader(buf.Bytes()))
+	r := NewReader(NewSliceTape(buf.Bytes()))
 	for {
 		blk, err := r.Next()
 		if err != nil {
@@ -163,7 +163,7 @@ func TestSpecPadStreamIsTerminal(t *testing.T) {
 		streamDescriptor(StreamNTEA, ea),
 		streamDescriptor(StreamSTAN, content),
 	)
-	r := NewReader(bytes.NewReader(streamArchive(file)))
+	r := NewReader(NewSliceTape(streamArchive(file)))
 	var h *Header
 	for {
 		blk, err := r.Next()
@@ -194,7 +194,7 @@ func TestSpecStreamAlignment(t *testing.T) {
 		streamDescriptor(StreamNTEA, odd),
 		streamDescriptor(StreamSTAN, odd),
 	)
-	r := NewReader(bytes.NewReader(streamArchive(file)))
+	r := NewReader(NewSliceTape(streamArchive(file)))
 	for {
 		blk, err := r.Next()
 		if err != nil {

@@ -88,7 +88,7 @@ func scanOne(p string) result {
 		return r
 	}
 	defer func() { _ = f.Close() }()
-	mr := mtf.NewReader(f)
+	mr := mtf.NewReader(mtf.NewFileTape(f))
 	c, err := mr.Census()
 	r.c = c
 	if err != nil {

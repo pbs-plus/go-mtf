@@ -97,7 +97,7 @@ func TestSpecNTFileOSDataVersion1(t *testing.T) {
 	b := ntFileBlock("ntv1.txt")
 	setNTOSData(b, 1, area)
 
-	r := NewReader(bytes.NewReader(fileArchive(b)))
+	r := NewReader(NewSliceTape(fileArchive(b)))
 	h := nextOfType(r, EntryFile)
 
 	if h.WinAttributes != winAttr {
@@ -129,7 +129,7 @@ func TestSpecNTFileOSDataVersion0(t *testing.T) {
 	b := ntFileBlock("ntv0.txt")
 	setNTOSData(b, 0, area)
 
-	r := NewReader(bytes.NewReader(fileArchive(b)))
+	r := NewReader(NewSliceTape(fileArchive(b)))
 	h := nextOfType(r, EntryFile)
 
 	if h.WinAttributes != winAttr {
@@ -158,7 +158,7 @@ func TestSpecNTDirbOSDataHasNoFileFlags(t *testing.T) {
 	b := ntDirbBlock(7, "ntdir")
 	setNTOSData(b, 1, area)
 
-	r := NewReader(bytes.NewReader(fileArchive(b)))
+	r := NewReader(NewSliceTape(fileArchive(b)))
 	h := nextEntryNamed(r, "ntdir")
 	if h == nil {
 		t.Fatal("ntdir entry not found")

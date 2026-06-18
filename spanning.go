@@ -79,7 +79,7 @@ func (r *Reader) probeEOTM() error {
 //
 // If next is nil (the default), an EOTM ends the archive like io.EOF. If next
 // returns io.EOF or a nil reader, the archive ends.
-func (r *Reader) SetContinuation(next func(Continuation) (io.Reader, error)) {
+func (r *Reader) SetContinuation(next func(Continuation) (Tape, error)) {
 	r.nextMedia = next
 }
 
@@ -100,16 +100,17 @@ func (r *Reader) switchMedium() bool {
 	if err != nil || nr == nil {
 		return false
 	}
-	// Discard any pending read-ahead belonging to the previous medium.
+	// Discard any pending read-ahead and buffered block belonging to the
+	// previous medium.
 	r.peek = r.peek[:0]
-	r.r = nr
+	r.src = nr
+	r.blockBuf = nil
+	r.blockOff = 0
+	r.physSize = 0
+	r.pendingErr = nil
 	r.abspos = 0 // new medium starts at its own offset 0
-	// Re-bind seeking to the new medium, if it supports it; otherwise disable
-	// seeking so data skips fall back to reading.
-	if s, ok := nr.(io.Seeker); ok {
-		r.seeker = s
-	} else {
-		r.seeker = nil
+	if c, ok := nr.(io.Closer); ok {
+		r.closer = c
 	}
 	r.flbsize = 0 // re-discovered from the continuation TAPE block
 	r.mediaSeq++

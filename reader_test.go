@@ -2,6 +2,7 @@ package mtf
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -201,7 +202,7 @@ func buildArchive() []byte {
 
 func TestReaderEntries(t *testing.T) {
 	data := buildArchive()
-	r := NewReader(bytes.NewReader(data))
+	r := NewReader(NewSliceTape(data))
 
 	type wantEntry struct {
 		typ  EntryType
@@ -253,7 +254,7 @@ func TestReaderEntries(t *testing.T) {
 }
 
 func TestReaderSetAndTape(t *testing.T) {
-	r := NewReader(bytes.NewReader(buildArchive()))
+	r := NewReader(NewSliceTape(buildArchive()))
 	for {
 		blk, err := r.Next()
 		if err == io.EOF {
@@ -280,7 +281,7 @@ func TestReaderSetAndTape(t *testing.T) {
 
 func TestFamily(t *testing.T) {
 	// Use the MBC archive which has a SetMap.
-	r := NewReader(bytes.NewReader(buildMBCArchive()))
+	r := NewReader(NewSliceTape(buildMBCArchive()))
 	for {
 		blk, err := r.Next()
 		if err == io.EOF {
@@ -313,7 +314,7 @@ func TestFamily(t *testing.T) {
 
 func TestReaderSkipWithoutRead(t *testing.T) {
 	// Iterate without reading file bodies; the reader must still resync.
-	r := NewReader(bytes.NewReader(buildArchive()))
+	r := NewReader(NewSliceTape(buildArchive()))
 	var names []string
 	for {
 		blk, err := r.Next()
@@ -349,7 +350,7 @@ func TestReaderSkipWithoutRead(t *testing.T) {
 // set end carries the catalog. The block sequence is what makes a medium's role
 // explicit.
 func TestBlockKinds(t *testing.T) {
-	r := NewReader(bytes.NewReader(buildArchive()))
+	r := NewReader(NewSliceTape(buildArchive()))
 	var kinds []BlockKind
 	var files int
 	for {
@@ -391,7 +392,7 @@ func TestReadChunked(t *testing.T) {
 	buf.Write(big)
 	buf.Write(buildESET())
 
-	r := NewReader(bytes.NewReader(buf.Bytes()))
+	r := NewReader(NewSliceTape(buf.Bytes()))
 	var got bytes.Buffer
 	for {
 		blk, err := r.Next()
@@ -420,20 +421,28 @@ func TestReadChunked(t *testing.T) {
 	}
 }
 
-// nonSeeker wraps a byte slice behind a reader that does NOT implement
-// io.Seeker, forcing the skipStreamData read-fallback path.
+// nonSeeker wraps a byte slice behind a [Tape] whose SeekBlock is unsupported,
+// forcing the skipStreamData read-discard fallback path.
 type nonSeeker struct {
 	data []byte
 	off  int
 }
 
-func (n *nonSeeker) Read(p []byte) (int, error) {
+func (n *nonSeeker) ReadBlock(dst []byte) (int, error) {
 	if n.off >= len(n.data) {
 		return 0, io.EOF
 	}
-	c := copy(p, n.data[n.off:])
-	n.off += c
+	end := min(n.off+maxTapeBlock, len(n.data))
+	c := copy(dst, n.data[n.off:end])
+	n.off = end
+	if n.off >= len(n.data) {
+		return c, io.EOF
+	}
 	return c, nil
+}
+
+func (n *nonSeeker) SeekBlock(block int64) error {
+	return errors.New("nonSeeker: seeking not supported")
 }
 
 // TestSeekAndNonSeekPathsEqual extracts every file twice — once from a
@@ -459,7 +468,7 @@ func TestSeekAndNonSeekPathsEqual(t *testing.T) {
 	buf.Write(buildESET())
 	data := buf.Bytes()
 
-	extract := func(src io.Reader) (map[string][]byte, error) {
+	extract := func(src Tape) (map[string][]byte, error) {
 		r := NewReader(src)
 		out := make(map[string][]byte)
 		for {
@@ -482,7 +491,7 @@ func TestSeekAndNonSeekPathsEqual(t *testing.T) {
 		return out, nil
 	}
 
-	seekOut, err := extract(bytes.NewReader(data))
+	seekOut, err := extract(NewSliceTape(data))
 	if err != nil {
 		t.Fatalf("seek path: %v", err)
 	}
@@ -581,7 +590,7 @@ func TestGarbageAfterESET(t *testing.T) {
 	garbage := bytes.Repeat([]byte{0xAB}, 256)
 	data = append(data, garbage...)
 
-	r := NewReader(bytes.NewReader(data))
+	r := NewReader(NewSliceTape(data))
 	count := 0
 	for {
 		blk, err := r.Next()
@@ -610,7 +619,7 @@ func TestChecksumValidationAlwaysOn(t *testing.T) {
 	tape := buildTape()
 	tape[dbChecksumOff] ^= 0xFF // corrupt the checksum
 	sset := buildSSET()
-	r := NewReader(bytes.NewReader(append(tape, sset...)))
+	r := NewReader(NewSliceTape(append(tape, sset...)))
 	_, err := r.Next()
 	if err == nil {
 		t.Fatal("Next should fail on bad checksum before ESET")

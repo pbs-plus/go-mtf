@@ -1,7 +1,6 @@
 package mtf
 
 import (
-	"bytes"
 	"io"
 	"testing"
 )
@@ -41,7 +40,7 @@ func BenchmarkNext(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		r := NewReader(bytes.NewReader(arc))
+		r := NewReader(NewSliceTape(arc))
 		for {
 			_, err := r.Next()
 			if err == io.EOF {
@@ -60,7 +59,7 @@ func BenchmarkNextHeaderOnly(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		r := NewReader(bytes.NewReader(arc))
+		r := NewReader(NewSliceTape(arc))
 		r.HeaderOnly()
 		for {
 			_, err := r.Next()
@@ -81,7 +80,7 @@ func BenchmarkRead(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		r := NewReader(bytes.NewReader(arc))
+		r := NewReader(NewSliceTape(arc))
 		for {
 			blk, err := r.Next()
 			if err == io.EOF {
@@ -111,7 +110,7 @@ func BenchmarkCensus(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		r := NewReader(bytes.NewReader(arc))
+		r := NewReader(NewSliceTape(arc))
 		if _, err := r.Census(); err != nil {
 			b.Fatal(err)
 		}

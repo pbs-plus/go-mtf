@@ -169,7 +169,7 @@ func buildMBCArchive() []byte {
 }
 
 func TestMediaBasedCatalog(t *testing.T) {
-	r := NewReader(bytes.NewReader(buildMBCArchive()))
+	r := NewReader(NewSliceTape(buildMBCArchive()))
 	for {
 		_, err := r.Next()
 		if err == io.EOF {
@@ -249,7 +249,7 @@ func TestCatalogVendorPayload(t *testing.T) {
 	xml := []byte("<CatImageFile>" + string(make([]byte, 200)) + "</CatImageFile>")
 	archive := buildMBCArchiveWithFDD(xml)
 
-	r := NewReader(bytes.NewReader(archive))
+	r := NewReader(NewSliceTape(archive))
 	for {
 		_, err := r.Next()
 		if err == io.EOF {
@@ -287,7 +287,7 @@ func TestCatalogBEAutoDetection(t *testing.T) {
 	buf.WriteString(mainXML)
 	archive := buildMBCArchiveWithFDD(buf.Bytes())
 
-	r := NewReader(bytes.NewReader(archive))
+	r := NewReader(NewSliceTape(archive))
 	for {
 		_, err := r.Next()
 		if err == io.EOF {

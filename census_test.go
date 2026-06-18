@@ -1,14 +1,13 @@
 package mtf
 
 import (
-	"bytes"
 	"testing"
 )
 
 // TestCensus verifies the Census helper classifies a multi-entry cartridge
 // correctly: counts volumes/dirs/files and infers the role from CatalogType.
 func TestCensus(t *testing.T) {
-	r := NewReader(bytes.NewReader(buildArchive()))
+	r := NewReader(NewSliceTape(buildArchive()))
 	c, err := r.Census()
 	if err != nil {
 		t.Fatalf("Census: %v", err)
@@ -21,7 +20,7 @@ func TestCensus(t *testing.T) {
 	}
 	// Census drains file data; confirm the file count matches what the reader
 	// delivers when walked entry-by-entry.
-	r2 := NewReader(bytes.NewReader(buildArchive()))
+	r2 := NewReader(NewSliceTape(buildArchive()))
 	var files int
 	for {
 		b, err := r2.Next()

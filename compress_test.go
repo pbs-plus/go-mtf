@@ -77,7 +77,7 @@ func TestReadCompressedStream(t *testing.T) {
 	content := bytes.Repeat([]byte("compressed-data-payload-"), 40) // ~1KB
 	raw := cmpFrame(content)
 	file := buildFileWithStreams("c.bin", compressedStan(raw, true, false))
-	r := NewReader(bytes.NewReader(streamArchive(file)))
+	r := NewReader(NewSliceTape(streamArchive(file)))
 	b := nextBlock(t, r)
 	if !b.Header.Compressed {
 		t.Fatalf("Compressed = false, want true")
@@ -94,7 +94,7 @@ func TestReadStoredPlainStream(t *testing.T) {
 	content := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06} // incompressible
 	raw := cmpFrame(content)
 	file := buildFileWithStreams("s.bin", compressedStan(raw, true, false))
-	r := NewReader(bytes.NewReader(streamArchive(file)))
+	r := NewReader(NewSliceTape(streamArchive(file)))
 	nextBlock(t, r)
 	got := readAll(t, r)
 	if !bytes.Equal(got, content) {
@@ -109,7 +109,7 @@ func TestReadEncryptedStream(t *testing.T) {
 	content := []byte("secret backup data that is not compressed")
 	raw := encFrame(content, key)
 	file := buildFileWithStreams("e.bin", compressedStan(raw, false, true))
-	r := NewReader(bytes.NewReader(streamArchive(file)))
+	r := NewReader(NewSliceTape(streamArchive(file)))
 	r.SetDecryptor(func(algo uint16, ct []byte) ([]byte, error) {
 		pt := make([]byte, len(ct))
 		for i := range ct {
@@ -130,7 +130,7 @@ func TestReadEncryptedNoDecryptor(t *testing.T) {
 	content := []byte("locked")
 	raw := encFrame(content, 0x11)
 	file := buildFileWithStreams("l.bin", compressedStan(raw, false, true))
-	r := NewReader(bytes.NewReader(streamArchive(file)))
+	r := NewReader(NewSliceTape(streamArchive(file)))
 	nextBlock(t, r)
 	buf := make([]byte, 32)
 	_, err := r.Read(buf)
@@ -163,7 +163,7 @@ func TestSkipCompressedEntry(t *testing.T) {
 	c2 := []byte("second file plain content")
 	file1 := buildFileWithStreams("first.bin", compressedStan(cmpFrame(c1), true, false))
 	file2 := buildFileWithStreams("second.txt", streamDescriptor(StreamSTAN, c2))
-	r := NewReader(bytes.NewReader(streamArchive(file1, file2)))
+	r := NewReader(NewSliceTape(streamArchive(file1, file2)))
 
 	// Skip the first (compressed) entry.
 	b1 := nextBlock(t, r)

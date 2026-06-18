@@ -111,7 +111,7 @@ func TestSpecWinAttributesFromOSData(t *testing.T) {
 	buf.Write(b)
 	buf.Write(buildESET())
 
-	r := NewReader(bytes.NewReader(buf.Bytes()))
+	r := NewReader(NewSliceTape(buf.Bytes()))
 	for {
 		blk, err := r.Next()
 		if err == io.EOF {
