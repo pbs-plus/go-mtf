@@ -659,34 +659,39 @@ func isSetMapStream(id uint32) bool {
 // are set, the medium has no EOTM, or no Set Map stream header is found in the
 // trailing blocks). Callers should fall back to a forward walk (Reader.Next)
 // in that case.
-func ReadSetMap(tape Tape) (*SetMap, error) {
+// ReadSetMapRaw locates and reads the raw Set Map stream payload (the bytes
+// after the 22-byte stream header) from a tape's Media Based Catalog, returning
+// the stream ID and payload. It is the building block of [ReadSetMap]; callers
+// that want to inspect the raw layout (e.g. to verify field offsets against
+// vendor media) can parse the payload themselves.
+func ReadSetMapRaw(tape Tape) (streamID uint32, payload []byte, err error) {
 	// Position at end of recorded media if the source supports it.
 	if e, ok := tape.(interface{ EOM() error }); ok {
 		if err := e.EOM(); err != nil {
-			return nil, fmt.Errorf("mtf: ReadSetMap: position at EOM: %w", err)
+			return 0, nil, fmt.Errorf("mtf: ReadSetMap: position at EOM: %w", err)
 		}
 	}
 	end, err := tape.TellBlock()
 	if err != nil {
-		return nil, fmt.Errorf("mtf: ReadSetMap: tape must report position: %w", err)
+		return 0, nil, fmt.Errorf("mtf: ReadSetMap: tape must report position: %w", err)
 	}
 	if end <= 2 {
-		return nil, nil // nothing to read
+		return 0, nil, nil // nothing to read
 	}
 
 	// 1. EOTM is the data block immediately before the trailing filemark + EOD.
 	eotmPBA := end - 2
 	if err := tape.SeekBlock(eotmPBA); err != nil {
-		return nil, fmt.Errorf("mtf: ReadSetMap: seek EOTM %d: %w", eotmPBA, err)
+		return 0, nil, fmt.Errorf("mtf: ReadSetMap: seek EOTM %d: %w", eotmPBA, err)
 	}
 	eotm := make([]byte, maxTapeBlock)
 	n, err := readFullBlock(tape, eotm)
 	if err != nil {
-		return nil, fmt.Errorf("mtf: ReadSetMap: read EOTM: %w", err)
+		return 0, nil, fmt.Errorf("mtf: ReadSetMap: read EOTM: %w", err)
 	}
 	eotm = eotm[:n]
 	if blockType(eotm) != dbEOTM {
-		return nil, fmt.Errorf("mtf: ReadSetMap: block at %d is %q, not EOTM", eotmPBA, blockType(eotm))
+		return 0, nil, fmt.Errorf("mtf: ReadSetMap: block at %d is %q, not EOTM", eotmPBA, blockType(eotm))
 	}
 	// EOTM attribute bits 16/17 flag an absent/invalid ESET PBA (spec Table 3).
 	attrs := u32(eotm, 0x04)
@@ -695,7 +700,7 @@ func ReadSetMap(tape Tape) (*SetMap, error) {
 		invalidESETPBABit = 1 << 17 // MTF_INVALID_ESET_PBA
 	)
 	if attrs&(noESETPBABit|invalidESETPBABit) != 0 {
-		return nil, nil // no usable catalog on this medium
+		return 0, nil, nil // no usable catalog on this medium
 	}
 	lastESET := int64(u64(eotm, eotmLastESETPBAOff))
 
@@ -712,7 +717,7 @@ func ReadSetMap(tape Tape) (*SetMap, error) {
 			continue
 		}
 		b := make([]byte, maxTapeBlock)
-		nn, rerr := readFullBlock(tape, b)
+			nn, rerr := readFullBlock(tape, b)
 		if rerr != nil || nn < streamHeaderSize {
 			continue
 		}
@@ -725,11 +730,22 @@ func ReadSetMap(tape Tape) (*SetMap, error) {
 		streamLen := int64(u64(b, stLengthOff))
 		payload, perr := readStreamPayload(tape, b, streamLen)
 		if perr != nil {
-			return nil, fmt.Errorf("mtf: ReadSetMap: read Set Map stream at %d: %w", p, perr)
+			return 0, nil, fmt.Errorf("mtf: ReadSetMap: read Set Map stream at %d: %w", p, perr)
 		}
-		return parseSetMapFor(id, payload), nil
+		return id, payload, nil
 	}
-	return nil, nil // no Set Map stream header in range
+	return 0, nil, nil // no Set Map stream header in range
+}
+
+func ReadSetMap(tape Tape) (*SetMap, error) {
+	id, payload, err := ReadSetMapRaw(tape)
+	if err != nil {
+		return nil, err
+	}
+	if payload == nil {
+		return nil, nil
+	}
+	return parseSetMapFor(id, payload), nil
 }
 
 // readFullBlock reads one physical block into dst via the Tape interface.
