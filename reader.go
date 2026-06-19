@@ -49,6 +49,14 @@ type Reader struct {
 	ssetPBA    int64
 	ssetAbsPos int64
 
+	// skipPolicy / skipThreshold / skipFunc govern how skipStreamData advances
+	// past a file's data. Default SkipNever: read sequentially, which is
+	// optimal for full scans on tape (PBAs are sequential between filemarks,
+	// §3.4.1). See SetSkipPolicy / SetSkipFunc.
+	skipPolicy   SkipPolicy
+	skipThreshold int64
+	skipFunc      SkipFunc
+
 	streamOff       uint32 // offset of the current stream header within blk
 	streamLen       int64  // total length of the current stream's data
 	streamDid       int64  // bytes of current stream data consumed so far
@@ -140,11 +148,69 @@ func Open(name string) (*Reader, error) {
 	return NewReader(NewFileTape(f)), nil
 }
 
-// NewReader returns a new Reader reading from the given [Tape]. The Reader
-// skips a file's data streams via [Tape.SeekBlock] rather than reading them,
-// which is dramatically faster when only block headers are needed (listing,
-// cataloging) on large archives — the fast-retrieval path MTF is designed
-// for (spec §3.4.3).
+// SkipPolicy decides how [Reader] skips a data stream's bytes when advancing
+// past a file's data (during a header-only walk or when the caller isn't
+// reading the file content).
+//
+// Per the MTF spec, PBAs between filemarks are sequential (§3.4.1) and a tape
+// streams at native read rate while a LOCATE-based SeekBlock costs a fixed
+// start/stop repositioning penalty (~1-3 s on LTO). So seeking is only faster
+// than reading when the skip is large enough that streaming it would take
+// longer than repositioning. For a full sequential scan (listing, bulk
+// migration) the correct choice is to never seek — just read the bytes in
+// order at native rate. For catalog-driven selective restore the caller seeks
+// once to the target object (§3.4.3 / §3.3.2.2).
+type SkipPolicy int
+
+const (
+	// SkipNever always reads stream data sequentially, never SeekBlock. This is
+	// the spec-correct mode for full scans and bulk migration: PBAs are
+	// sequential between filemarks (§3.4.1), so streaming at native tape rate
+	// is optimal and avoids per-file LOCATE/reposition penalties. It is the
+	// default.
+	SkipNever SkipPolicy = iota
+	// SkipAlways issues a §3.4.3 SSET-anchored SeekBlock for every skip. Use
+	// only when the source seeks faster than it streams for the relevant sizes
+	// (e.g. random-access file-backed sources, or jumping a few very large
+	// gaps).
+	SkipAlways
+	// SkipIfOver seeks only when the skip exceeds Threshold bytes; otherwise it
+	// reads sequentially. Threshold should be chosen so seek latency <
+	// Threshold/nativeReadRate for the target drive.
+	SkipIfOver
+)
+
+// SkipDecision is the per-skip input a SkipFunc uses to decide seek vs read.
+type SkipDecision struct {
+	Bytes    int64 // bytes to skip
+	PhysSize int   // physical block size of the medium
+}
+
+// SkipFunc is a caller-supplied predicate returning true to SeekBlock past the
+// skip, false to read it sequentially. nil is treated as SkipNever.
+type SkipFunc func(d SkipDecision) bool
+
+// SetSkipPolicy sets how [Reader] skips stream data. The default is SkipNever
+// (sequential read), which is correct for full scans and bulk migration.
+// Selective-restore callers (catalog-driven, jumping to a specific object per
+// §3.4.3) should keep SkipNever and instead seek the source directly to the
+// target before constructing the reader. SkipIfOver with a drive-appropriate
+// threshold is appropriate only for sources where LOCATE is cheaper than
+// streaming the given range.
+func (r *Reader) SetSkipPolicy(p SkipPolicy, threshold int64) {
+	r.skipPolicy = p
+	r.skipThreshold = threshold
+}
+
+// SetSkipFunc overrides the policy with a custom seek-vs-read predicate.
+func (r *Reader) SetSkipFunc(f SkipFunc) { r.skipFunc = f }
+
+// NewReader returns a new Reader reading from the given [Tape]. By default the
+// Reader reads stream data sequentially when skipping past a file's content
+// (SkipNever) — the spec-correct mode for full scans and bulk migration, since
+// PBAs are sequential between filemarks (§3.4.1) and tape streams at native
+// rate. Callers doing catalog-driven selective restore (§3.4.3) should seek
+// the source to the target object directly rather than scanning.
 func NewReader(t Tape) *Reader {
 	rd := &Reader{src: t, scratchBlock: make([]byte, maxTapeBlock)}
 	if c, ok := t.(io.Closer); ok {
@@ -568,7 +634,7 @@ func (r *Reader) skipStreamData(n int64) error {
 	if r.physSize > 0 {
 		target := r.abspos + n
 		// Fast path: the target lies inside the currently buffered block, so
-		// just advance the offset — cheaper than a tape LOCATE.
+		// just advance the offset — no tape motion at all.
 		if rel := target - r.abspos; rel >= 0 && r.blockOff+int(rel) <= len(r.blockBuf) {
 			r.blockOff += int(rel)
 			r.abspos = target
@@ -577,13 +643,18 @@ func (r *Reader) skipStreamData(n int64) error {
 			r.wrapFlbread()
 			return nil
 		}
-		// Seek across blocks (MTSEEK on tape) via the §3.4.3 SSET-anchored path.
-		if err := r.seekToByte(target); err == nil {
-			r.abspos = target
-			r.flbread += uint32(n)
-			r.streamDid += n
-			r.wrapFlbread()
-			return nil
+		// Seek across blocks only when the policy says LOCATE will be cheaper
+		// than streaming. PBAs are sequential between filemarks (§3.4.1), so for
+		// a full scan the spec-correct and fastest choice is to never seek and
+		// read at native tape rate; seeking pays a per-call reposition penalty.
+		if r.shouldSeek(n) {
+			if err := r.seekToByte(target); err == nil {
+				r.abspos = target
+				r.flbread += uint32(n)
+				r.streamDid += n
+				r.wrapFlbread()
+				return nil
+			}
 		}
 	}
 	for n > 0 {
@@ -601,6 +672,26 @@ func (r *Reader) skipStreamData(n int64) error {
 	}
 	r.wrapFlbread()
 	return nil
+}
+
+// shouldSeek reports whether a skip of n bytes should use SeekBlock (MTSEEK)
+// rather than reading the bytes sequentially. The default SkipNever returns
+// false: on tape, PBAs are sequential between filemarks (§3.4.1) and streaming
+// at native read rate beats paying a per-skip LOCATE/reposition penalty, so
+// full scans should never seek. Selective restore or random-access sources
+// opt into seeking via SetSkipPolicy / SetSkipFunc.
+func (r *Reader) shouldSeek(n int64) bool {
+	if r.skipFunc != nil {
+		return r.skipFunc(SkipDecision{Bytes: n, PhysSize: r.physSize})
+	}
+	switch r.skipPolicy {
+	case SkipAlways:
+		return true
+	case SkipIfOver:
+		return n >= r.skipThreshold
+	default:
+		return false
+	}
 }
 
 // readStreamData reads up to len(p) bytes of the current stream's data into p.

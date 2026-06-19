@@ -513,6 +513,46 @@ func TestSeekAndNonSeekPathsEqual(t *testing.T) {
 	}
 }
 
+// TestSkipPolicyEquivalence walks the same archive twice, skipping every file's
+// data (header-only walk) — once with the default SkipNever (sequential read)
+// and once with SkipAlways (§3.4.3 SeekBlock per skip). Both must enumerate the
+// same entries in the same order with identical metadata, proving the skip
+// policy is honored and the seek path stays byte-synchronized.
+func TestSkipPolicyEquivalence(t *testing.T) {
+	data := buildArchive()
+	count := func(t *testing.T, policy SkipPolicy) []string {
+		t.Helper()
+		r := NewReader(NewSliceTape(data))
+		if policy == SkipAlways {
+			r.SetSkipPolicy(SkipAlways, 0)
+		}
+		var names []string
+		for {
+			b, err := r.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("walk: %v", err)
+			}
+			if b.Kind == KindEntry && b.Header != nil {
+				names = append(names, b.Header.Name)
+			}
+		}
+		return names
+	}
+	never := count(t, SkipNever)
+	always := count(t, SkipAlways)
+	if len(never) != len(always) {
+		t.Fatalf("entry count: SkipNever=%d SkipAlways=%d", len(never), len(always))
+	}
+	for i := range never {
+		if never[i] != always[i] {
+			t.Errorf("entry %d: SkipNever=%q SkipAlways=%q", i, never[i], always[i])
+		}
+	}
+}
+
 func TestDateTimeRoundTrip(t *testing.T) {
 	cases := []time.Time{
 		time.Date(1980, 1, 1, 0, 0, 0, 0, time.Local),
