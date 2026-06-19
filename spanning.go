@@ -106,6 +106,7 @@ func (r *Reader) switchMedium() bool {
 	r.src = nr
 	r.blockBuf = nil
 	r.blockOff = 0
+	r.pbaInit = false // fresh medium: recapture the PBA on the next read
 	r.physSize = 0
 	r.pendingErr = nil
 	r.abspos = 0 // new medium starts at its own offset 0

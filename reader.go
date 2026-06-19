@@ -27,11 +27,22 @@ type Reader struct {
 	scratchBlock []byte    // maxTapeBlock destination for Tape.ReadBlock
 
 	// curBlockPBA is the physical block address of the block currently held in
-	// blockBuf, captured via Tape.TellBlock at the moment fillBlock read it
-	// (before any of its bytes are consumed). -1 if unavailable. Used to anchor
-	// the §3.4.3 seek calculation at the SSET without being skewed by driver
-	// read-ahead or by header bytes already consumed.
+	// blockBuf. It anchors the §3.4.3 seek calculation at the SSET (see
+	// captureSsetAnchor) without being skewed by driver read-ahead or by header
+	// bytes already consumed.
+	//
+	// Per MTF §3.4.1 the PBAs between filemarks are sequential, and on LTO they
+	// stay sequential across filemarks (a filemark consumes no block address),
+	// so fillBlock captures the live PBA ONCE (pbaInit=false) and then advances
+	// it arithmetically. A TellBlock (MTIOCPOS) per block would issue a READ
+	// POSITION SCSI round-trip on every read, breaking the drive's streaming
+	// cadence and forcing backhitching (repeated start/stop) that tanks
+	// throughput and physically wears the tape and head. pbaInit is reset to
+	// false after a seek or medium switch so the next read recaptures ground
+	// truth. -1 means anchoring is unavailable; seekToByte then falls back to
+	// origin-relative math.
 	curBlockPBA int64
+	pbaInit     bool
 
 	blk     []byte // header / stream-header buffer for the current block
 	flbsize uint32 // logical block size (from the TAPE descriptor)
@@ -414,12 +425,24 @@ func (r *Reader) Checksum() (stored, computed uint16) {
 // is delivered first and the error is held in pendingErr until blockBuf drains.
 func (r *Reader) fillBlock() error {
 	for {
-		// Record the PBA of the block we are about to read, so the reader can
-		// anchor seeks at the SSET's own block rather than a read-ahead position.
-		if pba, err := r.src.TellBlock(); err == nil {
-			r.curBlockPBA = pba
-		} else {
-			r.curBlockPBA = -1
+		// Track the PBA of the block we are about to read WITHOUT a TellBlock
+		// (MTIOCPOS) per block. That READ POSITION SCSI round-trip on every
+		// read breaks the drive's streaming cadence and forces backhitching
+		// (repeated start/stop), which collapses throughput and physically
+		// wears the tape and head. Per MTF §3.4.1 the PBAs between filemarks
+		// are sequential (and stay so across filemarks on LTO, since a
+		// filemark consumes no block address), so we capture the live PBA
+		// once and then advance it by one per data block. The value anchors
+		// §3.4.3 seeks at the SSET (see captureSsetAnchor).
+		if !r.pbaInit {
+			r.pbaInit = true
+			if pba, err := r.src.TellBlock(); err == nil {
+				r.curBlockPBA = pba
+			} else {
+				r.curBlockPBA = -1 // anchoring unavailable; seekToByte falls back
+			}
+		} else if r.curBlockPBA >= 0 {
+			r.curBlockPBA++ // next data block is one past the last one read
 		}
 		n, err := r.src.ReadBlock(r.scratchBlock)
 		if n > 0 {
@@ -434,6 +457,11 @@ func (r *Reader) fillBlock() error {
 			return nil
 		}
 		if errors.Is(err, ErrFilemark) {
+			// A filemark consumes no block address; undo the speculative
+			// increment so the next data block's PBA stays correct.
+			if r.curBlockPBA >= 0 {
+				r.curBlockPBA--
+			}
 			continue // filemark separates recorded sections; skip transparently
 		}
 		if err != nil {
@@ -590,6 +618,7 @@ func (r *Reader) seekToByte(target int64) error {
 	if err := r.src.SeekBlock(block); err != nil {
 		return err
 	}
+	r.pbaInit = false // next read recaptures the true PBA after repositioning
 	r.blockBuf = nil
 	r.blockOff = 0
 	r.peek = r.peek[:0]
