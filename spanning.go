@@ -9,6 +9,21 @@ import (
 // in the middle of a file's data stream.
 var errSpanned = errors.New("mtf: stream spans to continuation medium")
 
+// shouldProbeEOTM reports whether probeEOTM is needed at the current position.
+// Probing at every FLB boundary triggers unnecessary tape I/O when the FLB size
+// is small (e.g. 1024 bytes for Backup Exec). We probe only when spanning is
+// registered (nextMedia != nil) or when within 2 FLBs of exhausting the current
+// file data (to detect truncation warnings).
+func (r *Reader) shouldProbeEOTM() bool {
+	if r.nextMedia != nil {
+		return true
+	}
+	if r.flbsize == 0 {
+		return false
+	}
+	return r.dataRem <= int64(r.flbsize)*2
+}
+
 // atFLBBoundary reports whether the reader is positioned exactly at a Format
 // Logical Block boundary (all consumed bytes of the current block are spent).
 func (r *Reader) atFLBBoundary() bool {

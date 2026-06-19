@@ -48,7 +48,7 @@ func Parse(raw []byte) *mtf.SetMap {
 	mfm, count := mtf.ParseSetMapHeader(raw)
 	sm := &mtf.SetMap{MediaFamilyID: mfm}
 	off := mtf.SetMapHeaderSize
-	for i := 0; i < count; i++ {
+	for i := range count {
 		entry, length, ok := mtf.ParseSetMapEntryFixed(raw[off:])
 		if !ok {
 			break

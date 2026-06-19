@@ -64,7 +64,7 @@ type Reader struct {
 	// past a file's data. Default SkipNever: read sequentially, which is
 	// optimal for full scans on tape (PBAs are sequential between filemarks,
 	// §3.4.1). See SetSkipPolicy / SetSkipFunc.
-	skipPolicy   SkipPolicy
+	skipPolicy    SkipPolicy
 	skipThreshold int64
 	skipFunc      SkipFunc
 
@@ -727,7 +727,7 @@ func (r *Reader) shouldSeek(n int64) bool {
 func (r *Reader) readStreamData(p []byte) (int, error) {
 	total := 0
 	for total < len(p) && r.dataRem > 0 {
-		if r.atFLBBoundary() {
+		if r.atFLBBoundary() && r.shouldProbeEOTM() {
 			if err := r.probeEOTM(); err != nil {
 				// A genuine medium boundary was hit mid-stream: re-sync.
 				if err == errSpanned {
@@ -1268,7 +1268,7 @@ func (r *Reader) skipRemainingData() error {
 		return nil
 	}
 	for r.dataRem > 0 {
-		if r.atFLBBoundary() {
+		if r.atFLBBoundary() && r.shouldProbeEOTM() {
 			if err := r.probeEOTM(); err != nil {
 				if err == errSpanned {
 					if err := r.advanceToContinuationStream(); err != nil {
