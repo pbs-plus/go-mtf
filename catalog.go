@@ -172,8 +172,6 @@ type SetMapEntry struct {
 	SSETPBA uint64
 	// FDDPBA is the Physical Block Address of this data set's FDD stream.
 	FDDPBA uint64
-	// FLA is the Format Logical Address of the SSET block.
-	FLA uint64
 	// NumDirectories is the count of directories in the data set.
 	NumDirectories uint32
 	// NumFiles is the count of files in the data set.
@@ -437,19 +435,18 @@ const (
 	smeFDDPBAOff   = 20 // FDD PBA (uint64)
 	smeFDDSeqOff   = 28 // FDD Media Sequence Number (uint16)
 	smeSetNumOff   = 30 // Data Set Number (uint16)
-	smeFLAOff      = 32 // Format Logical Address (uint64)
-	smeNumDirOff   = 40 // Number Of Directories (uint32)
-	smeNumFileOff  = 44 // Number Of Files (uint32)
-	smeNumCorrOff  = 48 // Number Of Corrupt Files (uint32)
-	smeSizeOff     = 52 // Data Set Displayable Size (uint64)
-	smeNumVolOff   = 60 // Number Of Volumes (uint16)
-	smeNameOff     = 64 // Data Set Name (MTF_TAPE_ADDRESS)
-	smeDescOff     = 72 // Data Set Description (MTF_TAPE_ADDRESS)
-	smeUserOff     = 76 // User Name (MTF_TAPE_ADDRESS)
-	smeDateOff     = 80 // Media Write Date (MTF_DATE_TIME)
-	smeTZOff       = 85 // Time Zone (int8)
-	smeStrTypeOff  = 88 // STRING_TYPE (uint8)
-	smeMinSize     = 91 // minimum fixed size of a Set Map Entry
+	smeNumDirOff   = 32 // Number Of Directories (uint32)
+	smeNumFileOff  = 36 // Number Of Files (uint32)
+	smeNumCorrOff  = 40 // Number Of Corrupt Files (uint32)
+	smeSizeOff     = 44 // Data Set Displayable Size (uint64)
+	smeNumVolOff   = 52 // Number Of Volumes (uint16)
+	smeNameOff     = 56 // Data Set Name (MTF_TAPE_ADDRESS)
+	smeDescOff     = 64 // Data Set Description (MTF_TAPE_ADDRESS)
+	smeUserOff     = 68 // User Name (MTF_TAPE_ADDRESS)
+	smeDateOff     = 72 // Media Write Date (MTF_DATE_TIME)
+	smeTZOff       = 77 // Time Zone (int8)
+	smeStrTypeOff  = 80 // STRING_TYPE (uint8)
+	smeMinSize     = 83 // minimum fixed size of a Set Map Entry
 )
 
 // parseSetMap decodes a Type 1 'TSMP' stream payload into a Set Map. It returns
@@ -599,7 +596,6 @@ func ParseSetMapEntryFixed(rec []byte) (entry SetMapEntry, length int, ok bool) 
 	entry.FDDPBA = u64(rec, smeFDDPBAOff)
 	entry.FDDMediaSeq = u16(rec, smeFDDSeqOff)
 	entry.SetNumber = u16(rec, smeSetNumOff)
-	entry.FLA = u64(rec, smeFLAOff)
 	entry.NumDirectories = u32(rec, smeNumDirOff)
 	entry.NumFiles = u32(rec, smeNumFileOff)
 	entry.NumCorrupt = u32(rec, smeNumCorrOff)
@@ -646,7 +642,7 @@ func isSetMapStream(id uint32) bool {
 // (§3.3.2.2 / §5.2.9 / §7.3.1): the trailing MTF_EOTM block stores the PBA of
 // the last MTF_ESET; the Set Map stream is physical-block-aligned and is the
 // last catalog stream preceding that ESET (Figure 24). This lets a caller
-// enumerate every data set (name, SSETPBA, FLA, file count, size) in a handful
+// enumerate every data set (name, SSETPBA, file count, size) in a handful
 // of block reads near end-of-media instead of walking every file forward.
 //
 // If the tape implements EOM() (e.g. [DriveTape]), ReadSetMap positions at

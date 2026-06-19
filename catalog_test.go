@@ -92,22 +92,23 @@ func buildMBCArchiveWithFDD(fdd []byte) []byte {
 	// Set Map payload: header + one entry + one volume + name.
 	dsetName := mbcCStr("Backup Set 1")
 	volEntry := mbcFDDVolume(1, 1024, "C:", "SYSVOL", "HOST1")
-	strBase := 91 + len(volEntry)
-	entry := make([]byte, 91)
-	binary.LittleEndian.PutUint16(entry[0:], uint16(91+len(volEntry)+len(dsetName)))
-	binary.LittleEndian.PutUint16(entry[2:], 1)
-	binary.LittleEndian.PutUint64(entry[12:], 512)  // SSET PBA
-	binary.LittleEndian.PutUint64(entry[20:], 9999) // FDD PBA
-	binary.LittleEndian.PutUint16(entry[30:], 1)    // set number
-	binary.LittleEndian.PutUint32(entry[40:], 1)    // num dirs
-	binary.LittleEndian.PutUint32(entry[44:], 1)    // num files
-	binary.LittleEndian.PutUint64(entry[52:], 5)    // size
-	binary.LittleEndian.PutUint16(entry[60:], 1)    // num vols
-	binary.LittleEndian.PutUint16(entry[64:], uint16(len(dsetName)))
-	binary.LittleEndian.PutUint16(entry[66:], uint16(strBase))
-	copy(entry[80:], mbcDate())
-	entry[85] = 8 // TZ
-	entry[88] = mbcStrASCII
+	const smeFixed = 83 // spec Structure 32 fixed size (through Media Catalog Version @82)
+	strBase := smeFixed + len(volEntry)
+	entry := make([]byte, smeFixed)
+	binary.LittleEndian.PutUint16(entry[0:], uint16(smeFixed+len(volEntry)+len(dsetName)))
+	binary.LittleEndian.PutUint16(entry[2:], 1)            // media seq
+	binary.LittleEndian.PutUint64(entry[12:], 512)         // SSET PBA
+	binary.LittleEndian.PutUint64(entry[20:], 9999)        // FDD PBA
+	binary.LittleEndian.PutUint16(entry[30:], 1)           // set number
+	binary.LittleEndian.PutUint32(entry[32:], 1)           // num dirs
+	binary.LittleEndian.PutUint32(entry[36:], 1)           // num files
+	binary.LittleEndian.PutUint64(entry[44:], 5)           // displayable size
+	binary.LittleEndian.PutUint16(entry[52:], 1)           // num vols
+	binary.LittleEndian.PutUint16(entry[56:], uint16(len(dsetName))) // name string len
+	binary.LittleEndian.PutUint16(entry[58:], uint16(strBase))      // name string offset
+	copy(entry[72:], mbcDate())                            // media write date
+	entry[77] = 8                                          // TZ
+	entry[80] = mbcStrASCII                                // STRING_TYPE
 
 	smp := []byte{}
 	smp = append(smp, mbcLe32(0xDEADBEEF)...)
