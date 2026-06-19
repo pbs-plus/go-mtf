@@ -34,17 +34,15 @@ func mkVol(dev, vol, mach string) []byte {
 	return e
 }
 
-// mkEntry builds a Set Map Entry's fixed fields (83 bytes), LENGTH=83 (no nested
+// mkEntry builds a Set Map Entry's fixed fields (91 bytes), LENGTH=91 (no nested
 // volume), numVol set as given.
 func mkEntry(setNo uint16, numVol int) []byte {
-	const fixed = 83 // spec Structure 32 fixed size
-	e := make([]byte, fixed)
-	binary.LittleEndian.PutUint16(e[0:], fixed) // LENGTH = fixed only
+	e := make([]byte, 91)
+	binary.LittleEndian.PutUint16(e[0:], 91)   // LENGTH = fixed only
 	binary.LittleEndian.PutUint16(e[30:], setNo)
-	binary.LittleEndian.PutUint32(e[36:], 10)   // num files
-	binary.LittleEndian.PutUint64(e[44:], 10)   // displayable size
-	binary.LittleEndian.PutUint16(e[52:], uint16(numVol))
-	e[80] = 1                                   // STRING_TYPE
+	binary.LittleEndian.PutUint16(e[60:], uint16(numVol))
+	binary.LittleEndian.PutUint64(e[44:], 10) // num files
+	e[88] = 1                                  // STRING_TYPE
 	return e
 }
 

@@ -144,17 +144,18 @@ func TestSpecSetMapEntryOffsets(t *testing.T) {
 		"FDD PBA":                   20, // UINT64
 		"FDD Media Sequence Number": 28, // UINT16
 		"Data Set Number":           30, // UINT16
-		"Number Of Directories":     32, // UINT32
-		"Number Of Files":           36, // UINT32
-		"Number Of Corrupt Files":   40, // UINT32
-		"Data Set Displayable Size": 44, // UINT64
-		"Number Of Volumes":         52, // UINT16
-		"Data Set Name":             56, // MTF_TAPE_ADDRESS
-		"Data Set Description":      64, // MTF_TAPE_ADDRESS
-		"User Name":                 68, // MTF_TAPE_ADDRESS
-		"Media Write Date":          72, // MTF_DATE_TIME
-		"Time Zone":                 77, // INT8
-		"STRING_TYPE":               80, // UINT8
+		"Format Logical Address":    32, // UINT64
+		"Number Of Directories":     40, // UINT32
+		"Number Of Files":           44, // UINT32
+		"Number Of Corrupt Files":   48, // UINT32
+		"Data Set Displayable Size": 52, // UINT64
+		"Number Of Volumes":         60, // UINT16
+		"Data Set Name":             64, // MTF_TAPE_ADDRESS
+		"Data Set Description":      72, // MTF_TAPE_ADDRESS
+		"User Name":                 76, // MTF_TAPE_ADDRESS
+		"Media Write Date":          80, // MTF_DATE_TIME
+		"Time Zone":                 85, // INT8
+		"STRING_TYPE":               88, // UINT8
 	}
 	got := map[string]int{
 		"Length":                    smeLenOff,
@@ -165,6 +166,7 @@ func TestSpecSetMapEntryOffsets(t *testing.T) {
 		"FDD PBA":                   smeFDDPBAOff,
 		"FDD Media Sequence Number": smeFDDSeqOff,
 		"Data Set Number":           smeSetNumOff,
+		"Format Logical Address":    smeFLAOff,
 		"Number Of Directories":     smeNumDirOff,
 		"Number Of Files":           smeNumFileOff,
 		"Number Of Corrupt Files":   smeNumCorrOff,
@@ -182,8 +184,8 @@ func TestSpecSetMapEntryOffsets(t *testing.T) {
 			t.Errorf("SM_ENTRY %s offset = %d, want %d (spec Structure 32)", name, g, w)
 		}
 	}
-	// The minimum fixed size spans through Media Catalog Version @82 (1 byte).
-	if smeMinSize < 83 {
-		t.Errorf("smeMinSize = %d, want >= 83 (spec Structure 32 ends at offset 82)", smeMinSize)
+	// The minimum fixed size spans through Media Catalog Version @90 (1 byte).
+	if smeMinSize < 91 {
+		t.Errorf("smeMinSize = %d, want >= 91 (spec Structure 32 ends at offset 90)", smeMinSize)
 	}
 }
