@@ -641,11 +641,22 @@ func (r *Reader) seekToByte(target int64) error {
 	return nil
 }
 
-// captureSsetAnchor records the PBA anchor for the current Data Set, called
-// once scanStart has identified the MTF_SSET DBLK. The SSET's own physical
-// block address is r.curBlockPBA (captured by fillBlock before the block was
-// read) and its block-start byte position is abspos - blockOff. Per spec §3.4.2
-// the SSET is block-aligned, so this pair anchors the §3.4.3 FLA→PBA seek
+func (r *Reader) SeekToBlock(pba int64) error {
+	if err := r.src.SeekBlock(pba); err != nil {
+		return fmt.Errorf("mtf: seek to block %d: %w", pba, err)
+	}
+	r.curBlockPBA = pba
+	r.pbaInit = true
+	r.blockBuf = nil
+	r.blockOff = 0
+	r.peek = r.peek[:0]
+	r.pendingErr = nil
+	r.blk = r.blk[:0]
+	r.flbread = 0
+	r.abspos = 0
+	return nil
+}
+
 // calculation within the Data Set.
 func (r *Reader) captureSsetAnchor() {
 	r.ssetAbsPos = r.abspos - int64(r.blockOff)

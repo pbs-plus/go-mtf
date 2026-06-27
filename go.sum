@@ -1,0 +1,4 @@
+github.com/pbs-plus/go-tapedrive v0.5.1 h1:OLeFJQM+tzUQDNrKqViPhrCx0BJWcuQ/AalwoZ1LmsI=
+github.com/pbs-plus/go-tapedrive v0.5.1/go.mod h1:LO90B9vMnFbP/q5+Ci3/8RnuyBHZ2nw7qxQkCfjzKok=
+golang.org/x/sys v0.46.0 h1:noSf2Fq6F8DBgS+LysIkx7rIExoNHJsxOAtPp4rthXw=
+golang.org/x/sys v0.46.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
