@@ -4,8 +4,6 @@ import (
 	"errors"
 	"io"
 	"os"
-
-	"github.com/pbs-plus/go-tapedrive"
 )
 
 // ErrFilemark is returned by [Tape.ReadBlock] when the drive reports a
@@ -174,65 +172,3 @@ func (t *fileTape) TellBlock() (int64, error) {
 
 // Close lets fileTape satisfy io.Closer so [Reader.Close] releases the file.
 func (t *fileTape) Close() error { return t.f.Close() }
-
-// DriveTape adapts a [tapedrive.Drive] (the Linux st driver binding) to the
-// [Tape] interface. It is the bridge from a real LTO/SCSI tape drive to a
-// [Reader].
-//
-// The two libraries use opposite sentinel conventions for the two tape
-// boundaries, so DriveTape translates them:
-//
-//	go-tapedrive io.EOF        (a single filemark) -> mtf ErrFilemark
-//	go-tapedrive ErrEndOfData  (two filemarks/EOD) -> mtf io.EOF
-//
-// This keeps the mtf.Reader's contract intact — it skips ErrFilemark between
-// recorded sections and stops cleanly at io.EOF — while go-tapedrive stays a
-// pure driver binding with no mtf knowledge.
-type DriveTape struct {
-	d *tapedrive.Drive
-}
-
-// NewDriveTape wraps an open tapedrive.Drive. The caller transfers ownership:
-// the tape's Close (and therefore [Reader.Close]) closes the underlying drive.
-func NewDriveTape(d *tapedrive.Drive) *DriveTape { return &DriveTape{d: d} }
-
-// ReadBlock implements [Tape]. It delegates to [tapedrive.Drive.ReadBlockInto]
-// and translates the boundary errors to mtf's convention. A data block is
-// returned as (n, nil); a filemark as (0, ErrFilemark); end of recorded data
-// as (0, io.EOF). The caller's dst must be sized for the drive's largest
-// record (use maxTapeBlock).
-func (t *DriveTape) ReadBlock(dst []byte) (int, error) {
-	b, err := t.d.ReadBlock()
-	if err != nil {
-		switch {
-		case errors.Is(err, io.EOF):
-			return 0, ErrFilemark
-		case errors.Is(err, tapedrive.ErrEndOfData):
-			return 0, io.EOF
-		default:
-			return 0, err
-		}
-	}
-	return copy(dst, b), nil
-}
-
-// SeekBlock implements [Tape], positioning the drive at a physical block
-// address via MTSEEK. The block number is the same device-level PBA that
-// [tapedrive.Drive.TellBlock] reports and that MTF stores in MTF_SSET.
-func (t *DriveTape) SeekBlock(block int64) error { return t.d.SeekBlock(block) }
-
-// TellBlock implements [Tape], returning the drive's current physical block
-// address via MTIOCPOS. This is the live PBA the Reader captures when it reads
-// the MTF_SSET DBLK, anchoring the §3.4.3 FLA→PBA seek calculation.
-func (t *DriveTape) TellBlock() (int64, error) { return t.d.TellBlock() }
-
-// EOM positions the drive at end-of-recorded media. Used by [ReadSetMap] to
-// reach the trailing MTF_EOTM before reading the Media Based Catalog.
-func (t *DriveTape) EOM() error { return t.d.EOM() }
-
-// Rewind rewinds the drive to beginning of tape.
-func (t *DriveTape) Rewind() error { return t.d.Rewind() }
-
-// Close closes the underlying drive, satisfying io.Closer so [Reader.Close]
-// releases the device.
-func (t *DriveTape) Close() error { return t.d.Close() }
