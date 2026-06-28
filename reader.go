@@ -994,6 +994,10 @@ func (r *Reader) streamNext() error {
 	}
 	if os.Getenv("MTF_DEBUG") != "" {
 		fmt.Fprintf(os.Stderr, "[mtf] stream type=%d len=%d off=%d abspos=%d flbread=%d did=%d\n", r.streamType, r.streamLen, r.streamOff, r.abspos, r.flbread, r.streamDid)
+		if os.Getenv("MTF_DEBUG_BYTES") != "" {
+			n := min(len(r.blk), 32)
+			fmt.Fprintf(os.Stderr, "[mtf]   bytes:% x\n", r.blk[:n])
+		}
 	}
 	return nil
 }
