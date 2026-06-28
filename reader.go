@@ -929,21 +929,25 @@ func streamChecksumValid(b []byte, off int) bool {
 	return sum == u16(b, off+stChecksumOff)
 }
 
-// probeStreamHeader returns the offset within b of the next stream header,
-// given that the stream data ended at the start of b and that aligned is the
-// 4-byte-alignment pad the spec mandates. Real writers always set the stream
-// checksum, so the header is whichever of the immediate position (offset 0) or
-// the aligned position validates. If neither validates the aligned position is
-// returned to preserve the historical 4-aligned assumption (some synthetic
-// fixtures omit checksums).
 func probeStreamHeader(b []byte, aligned uint32) uint32 {
-	if streamChecksumValid(b, 0) {
-		return 0
-	}
-	if aligned != 0 && streamChecksumValid(b, int(aligned)) {
+	if aligned != 0 && probeHeaderPlausible(b, int(aligned)) {
 		return aligned
 	}
+	if probeHeaderPlausible(b, 0) {
+		return 0
+	}
 	return aligned
+}
+
+func probeHeaderPlausible(b []byte, off int) bool {
+	if !streamChecksumValid(b, off) {
+		return false
+	}
+	if len(b) < off+stLengthOff+8 {
+		return false
+	}
+	n := int64(u64(b, off+stLengthOff))
+	return n >= 0 && n <= maxMetadataStreamSize
 }
 
 // streamNext skips the remainder of the current stream's data and loads the
