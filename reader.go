@@ -820,7 +820,7 @@ func (r *Reader) scanStart() error {
 	// stream-length error. When a data set has ended (sawESET) the mismatch is
 	// past the real archive and endOrError converts it to a clean io.EOF.
 	if !checksumValid(r.blk) {
-		return fmt.Errorf("mtf: corrupt block header at offset %d: checksum mismatch (type=%s): %w",
+		return fmt.Errorf("mtf: corrupt block header at offset %d: checksum mismatch (type=%q): %w",
 			r.abspos, blockType(r.blk), io.ErrUnexpectedEOF)
 	}
 	return nil
