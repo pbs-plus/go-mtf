@@ -666,40 +666,47 @@ func isSetMapStream(id uint32) bool {
 // that want to inspect the raw layout (e.g. to verify field offsets against
 // vendor media) can parse the payload themselves.
 func ReadSetMapRaw(tape Tape) (streamID uint32, payload []byte, err error) {
+	id, payload, _, _, err := ReadSetMapWithTape(tape)
+	return id, payload, err
+}
+
+func ReadSetMapWithTape(tape Tape) (streamID uint32, payload []byte, tapeInfo *TapeInfo, family MediaFamily, err error) {
 	var flbsize uint32
 	var reader *Reader
 	if err := tape.SeekBlock(0); err == nil {
-		tb := make([]byte, maxTapeBlock)
-		if tn, terr := readFullBlock(tape, tb); terr == nil && tn >= tapeFLBSizeOff+2 && blockType(tb[:tn]) == dbTAPE {
-			flbsize = uint32(u16(tb[:tn], tapeFLBSizeOff))
+		primer := NewReader(tape)
+		if primeBlk, pErr := primer.Next(); pErr == nil && primeBlk != nil && primeBlk.Kind == KindMedia && primeBlk.Tape != nil {
+			tapeInfo = primeBlk.Tape
+			flbsize = uint32(primeBlk.Tape.FLBSize)
+			family = primer.Family()
 		}
 	}
 
 	if e, ok := tape.(interface{ EOM() error }); ok {
 		if err := e.EOM(); err != nil {
-			return 0, nil, fmt.Errorf("mtf: ReadSetMap: position at EOM: %w", err)
+			return 0, nil, tapeInfo, family, fmt.Errorf("mtf: ReadSetMap: position at EOM: %w", err)
 		}
 	}
 	end, err := tape.TellBlock()
 	if err != nil {
-		return 0, nil, fmt.Errorf("mtf: ReadSetMap: tape must report position: %w", err)
+		return 0, nil, tapeInfo, family, fmt.Errorf("mtf: ReadSetMap: tape must report position: %w", err)
 	}
 	if end <= 2 {
-		return 0, nil, nil
+		return 0, nil, tapeInfo, family, nil
 	}
 
 	eotmPBA := end - 2
 	if err := tape.SeekBlock(eotmPBA); err != nil {
-		return 0, nil, fmt.Errorf("mtf: ReadSetMap: seek EOTM %d: %w", eotmPBA, err)
+		return 0, nil, tapeInfo, family, fmt.Errorf("mtf: ReadSetMap: seek EOTM %d: %w", eotmPBA, err)
 	}
 	eotm := make([]byte, maxTapeBlock)
 	n, err := readFullBlock(tape, eotm)
 	if err != nil {
-		return 0, nil, fmt.Errorf("mtf: ReadSetMap: read EOTM: %w", err)
+		return 0, nil, tapeInfo, family, fmt.Errorf("mtf: ReadSetMap: read EOTM: %w", err)
 	}
 	eotm = eotm[:n]
 	if blockType(eotm) != dbEOTM {
-		return 0, nil, fmt.Errorf("mtf: ReadSetMap: block at %d is %q, not EOTM", eotmPBA, blockType(eotm))
+		return 0, nil, tapeInfo, family, fmt.Errorf("mtf: ReadSetMap: block at %d is %q, not EOTM", eotmPBA, blockType(eotm))
 	}
 	attrs := u32(eotm, 0x04)
 	const (
@@ -707,24 +714,24 @@ func ReadSetMapRaw(tape Tape) (streamID uint32, payload []byte, err error) {
 		invalidESETPBABit = 1 << 17
 	)
 	if attrs&(noESETPBABit|invalidESETPBABit) != 0 {
-		return 0, nil, nil
+		return 0, nil, tapeInfo, family, nil
 	}
 	lastESET := int64(u64(eotm, eotmLastESETPBAOff))
 
 	if id, payload, found := probeSetMapBackward(tape, lastESET); found {
-		return id, payload, nil
+		return id, payload, tapeInfo, family, nil
 	}
 
 	if flbsize > 0 {
 		reader = NewReader(tape)
 		reader.flbsize = flbsize
 	}
-	if id, payload, found, err := probeSetMapESETChain(tape, reader, lastESET, end); err != nil {
-		return 0, nil, err
+	if id, payload, found, serr := probeSetMapESETChain(tape, reader, lastESET, end); serr != nil {
+		return 0, nil, tapeInfo, family, serr
 	} else if found {
-		return id, payload, nil
+		return id, payload, tapeInfo, family, nil
 	}
-	return 0, nil, nil
+	return 0, nil, tapeInfo, family, nil
 }
 
 // probeSetMapBackward scans physical blocks backward from lastESET for a
@@ -821,6 +828,17 @@ func ReadSetMap(tape Tape) (*SetMap, error) {
 		return nil, nil
 	}
 	return parseSetMapFor(id, payload), nil
+}
+
+func ReadSetMapFull(tape Tape) (sm *SetMap, tapeInfo *TapeInfo, family MediaFamily, err error) {
+	id, payload, tapeInfo, family, err := ReadSetMapWithTape(tape)
+	if err != nil {
+		return nil, tapeInfo, family, err
+	}
+	if payload == nil {
+		return nil, tapeInfo, family, nil
+	}
+	return parseSetMapFor(id, payload), tapeInfo, family, nil
 }
 
 // readFullBlock reads one physical block into dst via the Tape interface.

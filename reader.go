@@ -245,6 +245,8 @@ func (r *Reader) HeaderOnly() { r.headerOnly = true }
 
 func (r *Reader) SkipUnnamedStreams() { r.skipExtraStreams = true }
 
+func (r *Reader) SetFLBSize(size uint16) { r.flbsize = uint32(size) }
+
 // SetDecryptor registers a callback used to decrypt encrypted data streams
 // (§6.5). The MTF specification defines no data-encryption cipher, so the
 // algorithm is vendor-specific; supply a Decryptor matching the writer. If a
