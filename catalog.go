@@ -666,7 +666,15 @@ func isSetMapStream(id uint32) bool {
 // that want to inspect the raw layout (e.g. to verify field offsets against
 // vendor media) can parse the payload themselves.
 func ReadSetMapRaw(tape Tape) (streamID uint32, payload []byte, err error) {
-	// Position at end of recorded media if the source supports it.
+	var flbsize uint32
+	var reader *Reader
+	if err := tape.SeekBlock(0); err == nil {
+		tb := make([]byte, maxTapeBlock)
+		if tn, terr := readFullBlock(tape, tb); terr == nil && tn >= tapeFLBSizeOff+2 && blockType(tb[:tn]) == dbTAPE {
+			flbsize = uint32(u16(tb[:tn], tapeFLBSizeOff))
+		}
+	}
+
 	if e, ok := tape.(interface{ EOM() error }); ok {
 		if err := e.EOM(); err != nil {
 			return 0, nil, fmt.Errorf("mtf: ReadSetMap: position at EOM: %w", err)
@@ -677,10 +685,9 @@ func ReadSetMapRaw(tape Tape) (streamID uint32, payload []byte, err error) {
 		return 0, nil, fmt.Errorf("mtf: ReadSetMap: tape must report position: %w", err)
 	}
 	if end <= 2 {
-		return 0, nil, nil // nothing to read
+		return 0, nil, nil
 	}
 
-	// 1. EOTM is the data block immediately before the trailing filemark + EOD.
 	eotmPBA := end - 2
 	if err := tape.SeekBlock(eotmPBA); err != nil {
 		return 0, nil, fmt.Errorf("mtf: ReadSetMap: seek EOTM %d: %w", eotmPBA, err)
@@ -694,38 +701,30 @@ func ReadSetMapRaw(tape Tape) (streamID uint32, payload []byte, err error) {
 	if blockType(eotm) != dbEOTM {
 		return 0, nil, fmt.Errorf("mtf: ReadSetMap: block at %d is %q, not EOTM", eotmPBA, blockType(eotm))
 	}
-	// EOTM attribute bits 16/17 flag an absent/invalid ESET PBA (spec Table 3).
 	attrs := u32(eotm, 0x04)
 	const (
-		noESETPBABit      = 1 << 16 // MTF_NO_ESET_PBA
-		invalidESETPBABit = 1 << 17 // MTF_INVALID_ESET_PBA
+		noESETPBABit      = 1 << 16
+		invalidESETPBABit = 1 << 17
 	)
 	if attrs&(noESETPBABit|invalidESETPBABit) != 0 {
-		return 0, nil, nil // no usable catalog on this medium
+		return 0, nil, nil
 	}
 	lastESET := int64(u64(eotm, eotmLastESETPBAOff))
 
-	// 2. Strategy A — Backup Exec layout: the catalog streams (SMP2/TFDD)
-	// are standalone block-aligned physical blocks placed BEFORE the ESET
-	// DBLK. Scan backward from lastESET for a Set Map stream header,
-	// validated by its magic ID + word-XOR checksum. The filemark trailing
-	// the previous recorded section bounds the scan.
 	if id, payload, found := probeSetMapBackward(tape, lastESET); found {
 		return id, payload, nil
 	}
 
-	// 3. Strategy B — spec-compliant layout (MTF §7.3.1): the catalog is
-	// carried as data streams attached to the ESET DBLK, located via the
-	// ESET's "Offset To First Event". Walk the ESET's stream chain using the
-	// Reader's checksum-validated, cross-block-aware streamStart/streamNext
-	// logic (captureCatalog). The consolidated Set Map is typically on the
-	// last ESET; scan backward for ESET DBLKs and walk each one's streams.
-	if id, payload, found, err := probeSetMapESETChain(tape, lastESET, end); err != nil {
+	if flbsize > 0 {
+		reader = NewReader(tape)
+		reader.flbsize = flbsize
+	}
+	if id, payload, found, err := probeSetMapESETChain(tape, reader, lastESET, end); err != nil {
 		return 0, nil, err
 	} else if found {
 		return id, payload, nil
 	}
-	return 0, nil, nil // no Set Map found by either strategy
+	return 0, nil, nil
 }
 
 // probeSetMapBackward scans physical blocks backward from lastESET for a
@@ -763,20 +762,9 @@ func probeSetMapBackward(tape Tape, lastESET int64) (uint32, []byte, bool) {
 	return 0, nil, false
 }
 
-// probeSetMapESETChain walks the data-stream chain of ESET DBLKs near
-// lastESET (spec-compliant layout). It positions a fresh Reader at each ESET
-// candidate and uses captureCatalog to traverse the stream chain. end is the
-// EOM block address, used only to bound the backward scan.
-func probeSetMapESETChain(tape Tape, lastESET, end int64) (id uint32, payload []byte, found bool, err error) {
-	if err := tape.SeekBlock(0); err != nil {
-		return 0, nil, false, fmt.Errorf("mtf: ReadSetMap: rewind: %w", err)
-	}
-	r := NewReader(tape)
-	// Prime the Reader with the TAPE block so flbsize is set; stream walking
-	// and scanNext depend on it for block-boundary accounting.
-	primeBlk, pErr := r.Next()
-	if pErr != nil || primeBlk == nil || primeBlk.Kind != KindMedia {
-		return 0, nil, false, fmt.Errorf("mtf: ReadSetMap: prime TAPE block: %w", pErr)
+func probeSetMapESETChain(tape Tape, reader *Reader, lastESET, end int64) (id uint32, payload []byte, found bool, err error) {
+	if reader == nil {
+		return 0, nil, false, nil
 	}
 
 	esetPBA := lastESET - 1
@@ -806,19 +794,19 @@ func probeSetMapESETChain(tape Tape, lastESET, end int64) (id uint32, payload []
 		// follows the ESET's "Offset To First Event" and traverses stream
 		// headers with checksums and 4-byte alignment, reading across
 		// physical block boundaries as needed.
-		r.catFDDraw = nil
-		r.catSMPraw = nil
-		r.catSMPStreamID = 0
-		r.catalog = nil
-		if err := r.SeekToBlock(p); err != nil {
+		reader.catFDDraw = nil
+		reader.catSMPraw = nil
+		reader.catSMPStreamID = 0
+		reader.catalog = nil
+		if err := reader.SeekToBlock(p); err != nil {
 			continue
 		}
-		blk, nerr := r.Next()
+		blk, nerr := reader.Next()
 		if nerr != nil || blk == nil {
 			continue
 		}
-		if len(r.catSMPraw) > 0 {
-			return r.catSMPStreamID, r.catSMPraw, true, nil
+		if len(reader.catSMPraw) > 0 {
+			return reader.catSMPStreamID, reader.catSMPraw, true, nil
 		}
 	}
 	return 0, nil, false, nil
