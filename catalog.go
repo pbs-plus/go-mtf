@@ -1,6 +1,7 @@
 package mtf
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -707,8 +708,7 @@ func ReadSetMapRaw(tape Tape) (streamID uint32, payload []byte, err error) {
 	// 2. The EOTM's Last ESET PBA names the filemark trailing the last ESET
 	// (spec Figure 24: [ESET DBLK][filemark]). The ESET DBLK is the preceding
 	// block. The Set Map stream is the last catalog stream before that ESET,
-	// physical-block-aligned. Scan back a few blocks for a Set Map stream header.
-	for delta := int64(1); delta <= 4; delta++ {
+	for delta := int64(1); delta <= 256; delta++ {
 		p := lastESET - delta
 		if p < 0 {
 			break
@@ -717,7 +717,10 @@ func ReadSetMapRaw(tape Tape) (streamID uint32, payload []byte, err error) {
 			continue
 		}
 		b := make([]byte, maxTapeBlock)
-			nn, rerr := readFullBlock(tape, b)
+		nn, rerr := readFullBlock(tape, b)
+		if errors.Is(rerr, ErrFilemark) {
+			break
+		}
 		if rerr != nil || nn < streamHeaderSize {
 			continue
 		}
