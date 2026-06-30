@@ -705,9 +705,33 @@ func ReadSetMapRaw(tape Tape) (streamID uint32, payload []byte, err error) {
 	}
 	lastESET := int64(u64(eotm, eotmLastESETPBAOff))
 
-	// 2. The EOTM's Last ESET PBA names the filemark trailing the last ESET
-	// (spec Figure 24: [ESET DBLK][filemark]). The ESET DBLK is the preceding
-	// block. The Set Map stream is the last catalog stream before that ESET,
+	// 2. Strategy A — Backup Exec layout: the catalog streams (SMP2/TFDD)
+	// are standalone block-aligned physical blocks placed BEFORE the ESET
+	// DBLK. Scan backward from lastESET for a Set Map stream header,
+	// validated by its magic ID + word-XOR checksum. The filemark trailing
+	// the previous recorded section bounds the scan.
+	if id, payload, found := probeSetMapBackward(tape, lastESET); found {
+		return id, payload, nil
+	}
+
+	// 3. Strategy B — spec-compliant layout (MTF §7.3.1): the catalog is
+	// carried as data streams attached to the ESET DBLK, located via the
+	// ESET's "Offset To First Event". Walk the ESET's stream chain using the
+	// Reader's checksum-validated, cross-block-aware streamStart/streamNext
+	// logic (captureCatalog). The consolidated Set Map is typically on the
+	// last ESET; scan backward for ESET DBLKs and walk each one's streams.
+	if id, payload, found, err := probeSetMapESETChain(tape, lastESET, end); err != nil {
+		return 0, nil, err
+	} else if found {
+		return id, payload, nil
+	}
+	return 0, nil, nil // no Set Map found by either strategy
+}
+
+// probeSetMapBackward scans physical blocks backward from lastESET for a
+// block-aligned Set Map stream header (Backup Exec layout). It returns the
+// stream ID and raw payload on success.
+func probeSetMapBackward(tape Tape, lastESET int64) (uint32, []byte, bool) {
 	for delta := int64(1); delta <= 256; delta++ {
 		p := lastESET - delta
 		if p < 0 {
@@ -719,7 +743,7 @@ func ReadSetMapRaw(tape Tape) (streamID uint32, payload []byte, err error) {
 		b := make([]byte, maxTapeBlock)
 		nn, rerr := readFullBlock(tape, b)
 		if errors.Is(rerr, ErrFilemark) {
-			break
+			break // crossed into the previous recorded section
 		}
 		if rerr != nil || nn < streamHeaderSize {
 			continue
@@ -729,15 +753,75 @@ func ReadSetMapRaw(tape Tape) (streamID uint32, payload []byte, err error) {
 		if !isSetMapStream(id) {
 			continue
 		}
-		// Found the Set Map stream header. Parse its payload.
 		streamLen := int64(u64(b, stLengthOff))
 		payload, perr := readStreamPayload(tape, b, streamLen)
 		if perr != nil {
-			return 0, nil, fmt.Errorf("mtf: ReadSetMap: read Set Map stream at %d: %w", p, perr)
+			return 0, nil, false
 		}
-		return id, payload, nil
+		return id, payload, true
 	}
-	return 0, nil, nil // no Set Map stream header in range
+	return 0, nil, false
+}
+
+// probeSetMapESETChain walks the data-stream chain of ESET DBLKs near
+// lastESET (spec-compliant layout). It positions a fresh Reader at each ESET
+// candidate and uses captureCatalog to traverse the stream chain. end is the
+// EOM block address, used only to bound the backward scan.
+func probeSetMapESETChain(tape Tape, lastESET, end int64) (id uint32, payload []byte, found bool, err error) {
+	if err := tape.SeekBlock(0); err != nil {
+		return 0, nil, false, fmt.Errorf("mtf: ReadSetMap: rewind: %w", err)
+	}
+	r := NewReader(tape)
+	// Prime the Reader with the TAPE block so flbsize is set; stream walking
+	// and scanNext depend on it for block-boundary accounting.
+	primeBlk, pErr := r.Next()
+	if pErr != nil || primeBlk == nil || primeBlk.Kind != KindMedia {
+		return 0, nil, false, fmt.Errorf("mtf: ReadSetMap: prime TAPE block: %w", pErr)
+	}
+
+	esetPBA := lastESET - 1
+	probe := make([]byte, maxTapeBlock)
+	for delta := int64(0); delta <= 256; delta++ {
+		p := esetPBA - delta
+		if p < 0 {
+			break
+		}
+
+		// Quick probe: is this block an ESET DBLK with a valid checksum?
+		if err := tape.SeekBlock(p); err != nil {
+			continue
+		}
+		pn, perr := readFullBlock(tape, probe)
+		if errors.Is(perr, ErrFilemark) {
+			break // crossed into a previous recorded section
+		}
+		if perr != nil || pn < dbCommonSize {
+			continue
+		}
+		if blockType(probe[:pn]) != dbESET || !checksumValid(probe[:pn]) {
+			continue
+		}
+
+		// Found an ESET DBLK. Walk its stream chain (captureCatalog), which
+		// follows the ESET's "Offset To First Event" and traverses stream
+		// headers with checksums and 4-byte alignment, reading across
+		// physical block boundaries as needed.
+		r.catFDDraw = nil
+		r.catSMPraw = nil
+		r.catSMPStreamID = 0
+		r.catalog = nil
+		if err := r.SeekToBlock(p); err != nil {
+			continue
+		}
+		blk, nerr := r.Next()
+		if nerr != nil || blk == nil {
+			continue
+		}
+		if len(r.catSMPraw) > 0 {
+			return r.catSMPStreamID, r.catSMPraw, true, nil
+		}
+	}
+	return 0, nil, false, nil
 }
 
 func ReadSetMap(tape Tape) (*SetMap, error) {
