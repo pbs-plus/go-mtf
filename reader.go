@@ -114,6 +114,8 @@ type Reader struct {
 	// as Compressed/Encrypted/Sparse remain accurate.
 	headerOnly bool
 
+	skipExtraStreams bool
+
 	strU16     []uint16 // reusable UTF-16 decode buffer (decodeStringInto)
 	strBuf     []byte   // reusable byte buffer for the entry Name path (joinPathDecode/joinPathInto)
 	scratchBuf []byte   // reusable byte buffer for other decoded strings (decodeStringInto ASCII path)
@@ -240,6 +242,8 @@ func NewReader(t Tape) *Reader {
 // essentially only headers, with zero per-entry allocations. It is used by
 // [Reader.Census].
 func (r *Reader) HeaderOnly() { r.headerOnly = true }
+
+func (r *Reader) SkipUnnamedStreams() { r.skipExtraStreams = true }
 
 // SetDecryptor registers a callback used to decrypt encrypted data streams
 // (§6.5). The MTF specification defines no data-encryption cipher, so the

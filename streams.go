@@ -137,11 +137,8 @@ func (r *Reader) captureStream(dst *[]byte) error {
 	return nil
 }
 
-// captureExtra reads the current stream's bytes into the generic Streams
-// bucket on h, preserving its type code. In header-only mode the bytes are
-// skipped and nothing is appended.
 func (r *Reader) captureExtra(h *Header) error {
-	if r.headerOnly {
+	if r.headerOnly || r.skipExtraStreams {
 		return r.skipCurrentStream()
 	}
 	b, err := r.readStreamBytes(r.streamLen)

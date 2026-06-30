@@ -104,7 +104,25 @@ func BenchmarkRead(b *testing.B) {
 	}
 }
 
-// BenchmarkCensus measures allocations for the Census helper.
+func BenchmarkNextSkipUnnamed(b *testing.B) {
+	arc := makeArchive(50)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r := NewReader(NewSliceTape(arc))
+		r.SkipUnnamedStreams()
+		for {
+			_, err := r.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+}
+
 func BenchmarkCensus(b *testing.B) {
 	arc := makeArchive(50)
 	b.ReportAllocs()
