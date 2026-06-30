@@ -705,39 +705,70 @@ func ReadSetMapRaw(tape Tape) (streamID uint32, payload []byte, err error) {
 	}
 	lastESET := int64(u64(eotm, eotmLastESETPBAOff))
 
-	// 2. The EOTM's Last ESET PBA names the filemark trailing the last ESET
-	// (spec Figure 24: [ESET DBLK][filemark]). The ESET DBLK is the preceding
-	// block. The Set Map stream is the last catalog stream before that ESET,
-	for delta := int64(1); delta <= 256; delta++ {
-		p := lastESET - delta
+	// 2. Spec-correct catalog access (MTF spec §3.3.2.2 / §7.3.1): the Set
+	// Map is a data stream attached to an ESET DBLK. The EOTM's Last ESET PBA
+	// names the filemark trailing the last ESET (Figure 24: [ESET
+	// DBLK][filemark]); the ESET DBLK is the preceding block (lastESET-1).
+	//
+	// Walk the ESET's stream chain using the Reader's streamStart/streamNext
+	// logic (checksum-validated, 4-byte-aligned, cross-block aware) rather
+	// than probing raw blocks for stream-header magic. The consolidated Set
+	// Map is typically on the last ESET, but Backup Exec may attach it to an
+	// earlier one; scan backward for ESET DBLKs and walk each one's streams,
+	// returning the first (nearest to lastESET) that carries a Set Map.
+	if err := tape.SeekBlock(0); err != nil {
+		return 0, nil, fmt.Errorf("mtf: ReadSetMap: rewind: %w", err)
+	}
+	r := NewReader(tape)
+	// Prime the Reader with the TAPE block so flbsize is set; stream walking
+	// and scanNext depend on it for block-boundary accounting.
+	if primeBlk, pErr := r.Next(); pErr != nil || primeBlk == nil || primeBlk.Kind != KindMedia {
+		return 0, nil, fmt.Errorf("mtf: ReadSetMap: prime TAPE block: %w", pErr)
+	}
+
+	esetPBA := lastESET - 1
+	probe := make([]byte, maxTapeBlock)
+	for delta := int64(0); delta <= 256; delta++ {
+		p := esetPBA - delta
 		if p < 0 {
 			break
 		}
+
+		// Quick probe: is this block an ESET DBLK with a valid checksum?
 		if err := tape.SeekBlock(p); err != nil {
 			continue
 		}
-		b := make([]byte, maxTapeBlock)
-		nn, rerr := readFullBlock(tape, b)
-		if errors.Is(rerr, ErrFilemark) {
-			break
+		pn, perr := readFullBlock(tape, probe)
+		if errors.Is(perr, ErrFilemark) {
+			break // crossed into a previous recorded section
 		}
-		if rerr != nil || nn < streamHeaderSize {
+		if perr != nil || pn < dbCommonSize {
 			continue
 		}
-		b = b[:nn]
-		id := u32(b, 0)
-		if !isSetMapStream(id) {
+		if blockType(probe[:pn]) != dbESET || !checksumValid(probe[:pn]) {
 			continue
 		}
-		// Found the Set Map stream header. Parse its payload.
-		streamLen := int64(u64(b, stLengthOff))
-		payload, perr := readStreamPayload(tape, b, streamLen)
-		if perr != nil {
-			return 0, nil, fmt.Errorf("mtf: ReadSetMap: read Set Map stream at %d: %w", p, perr)
+
+		// Found an ESET DBLK. Walk its stream chain (captureCatalog), which
+		// follows the ESET's "Offset To First Event" and traverses stream
+		// headers with checksums and 4-byte alignment, reading across
+		// physical block boundaries as needed.
+		r.catFDDraw = nil
+		r.catSMPraw = nil
+		r.catSMPStreamID = 0
+		r.catalog = nil
+		if err := r.SeekToBlock(p); err != nil {
+			continue
 		}
-		return id, payload, nil
+		blk, nerr := r.Next()
+		if nerr != nil || blk == nil {
+			continue
+		}
+		if len(r.catSMPraw) > 0 {
+			return r.catSMPStreamID, r.catSMPraw, nil
+		}
 	}
-	return 0, nil, nil // no Set Map stream header in range
+	return 0, nil, nil // no ESET carrying a Set Map was found
 }
 
 func ReadSetMap(tape Tape) (*SetMap, error) {
